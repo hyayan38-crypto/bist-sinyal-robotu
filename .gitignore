@@ -1,0 +1,12 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+bist_robot.db
+logs/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.DS_Store

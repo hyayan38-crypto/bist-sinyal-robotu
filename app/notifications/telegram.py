@@ -1,0 +1,507 @@
+"""
+Telegram Bildirim Modülü
+========================
+Yapılandırma (.env):
+  TELEGRAM_BOT_TOKEN=<BotFather'dan alınan token>
+  TELEGRAM_CHAT_ID=<hedef chat/kanal ID'si>
+
+Bot yoksa veya yapılandırılmamışsa hiçbir fonksiyon istisna fırlatmaz;
+yalnızca uyarı loglanır ve False/None döner.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime
+from typing import Optional
+
+from loguru import logger
+from telegram import Bot
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+
+from app.config import settings
+
+
+# ── Disclaimer sabiti ─────────────────────────────────────────────────────────
+
+_DISCLAIMER = "⚠️ Bu yatırım tavsiyesi değildir."
+
+
+# ── Bot yönetimi ──────────────────────────────────────────────────────────────
+
+_bot: Optional[Bot] = None
+
+
+def _get_bot() -> Optional[Bot]:
+    global _bot
+    if not settings.telegram_bot_token:
+        return None
+    if _bot is None:
+        _bot = Bot(token=settings.telegram_bot_token)
+    return _bot
+
+
+def is_configured() -> bool:
+    """Bot token ve chat ID her ikisi de dolu ise True döner."""
+    return bool(settings.telegram_bot_token and settings.telegram_chat_id)
+
+
+# ── Düşük seviye gönderici ────────────────────────────────────────────────────
+
+async def send_telegram_message(
+    message: str,
+    parse_mode: str = ParseMode.MARKDOWN,
+    retries: int = 2,
+) -> bool:
+    """
+    Ham metin mesajı gönderir.
+
+    Args:
+        message:    Gönderilecek metin (Markdown destekli).
+        parse_mode: ParseMode.MARKDOWN (varsayılan) veya ParseMode.HTML.
+        retries:    Hata durumunda tekrar deneme sayısı.
+
+    Returns:
+        True → mesaj iletildi, False → yapılandırma eksik veya hata.
+    """
+    bot = _get_bot()
+    if not bot:
+        logger.warning("Telegram bot token ayarlanmamış — mesaj atlandı")
+        return False
+    if not settings.telegram_chat_id:
+        logger.warning("Telegram chat ID ayarlanmamış — mesaj atlandı")
+        return False
+
+    for attempt in range(1, retries + 2):
+        try:
+            await bot.send_message(
+                chat_id=settings.telegram_chat_id,
+                text=message,
+                parse_mode=parse_mode,
+            )
+            logger.debug(f"Telegram mesajı gönderildi (deneme {attempt})")
+            return True
+        except TelegramError as exc:
+            if attempt <= retries:
+                logger.warning(f"Telegram hata (deneme {attempt}/{retries+1}): {exc} — yeniden deneniyor")
+                await asyncio.sleep(1)
+            else:
+                logger.error(f"Telegram gönderme başarısız: {exc}")
+    return False
+
+
+# ── Mesaj formatlayıcılar ─────────────────────────────────────────────────────
+
+def _strip_is(symbol: str) -> str:
+    """'ASELS.IS' → 'ASELS'"""
+    return symbol.removesuffix(".IS")
+
+
+def format_signal_message(result: dict) -> str:
+    """
+    Tek bir scan sonucunu Telegram mesajına çevirir.
+
+    EARLY_WATCH  → 🟠 BIST YAKLAŞIYOR
+    SETUP        → 🟡 BIST HAZIRLIK
+    BUY          → 🟢 BIST SİNYALİ
+    WATCH        → 🔵 BIST TAKİP
+    LATE_BREAKOUT → 🔴 BIST GEÇ KIRILI
+    """
+    signal   = result.get("signal", "").upper()
+    symbol   = _strip_is(result.get("symbol", ""))
+    price    = result.get("price", 0.0)
+    reason   = result.get("reason", "")
+    risk     = result.get("risk_level", "")
+    strength = result.get("strength", 0.0)
+    sl       = result.get("stop_loss")
+    tp       = result.get("take_profit")
+    n_met    = result.get("conditions_met")
+    dist     = result.get("distance_to_res_pct")
+
+    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    sl_line = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
+    tp_line = f"🎯 Hedef: `{tp:.2f} TL`\n" if tp else ""
+
+    if signal == "EARLY_WATCH":
+        dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
+        return (
+            f"🟠 *BIST YAKLAŞIYOR*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{symbol}*\n"
+            f"Sinyal: *EARLY WATCH* 🟠\n"
+            f"Fiyat: `{price:.2f} TL`\n"
+            f"Güç: `{strength:.0%}`\n"
+            f"Sebep: {reason}\n"
+            f"{dist_line}"
+            f"{sl_line}"
+            f"{tp_line}"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+
+    if signal == "SETUP":
+        dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
+        cond_line = f"Koşullar: `{n_met}/6`\n" if n_met is not None else ""
+        return (
+            f"🟡 *BIST HAZIRLIK*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{symbol}*\n"
+            f"Sinyal: *SETUP* 🟡\n"
+            f"Fiyat: `{price:.2f} TL`\n"
+            f"Güç: `{strength:.0%}`\n"
+            f"Sebep: {reason}\n"
+            f"{cond_line}"
+            f"{dist_line}"
+            f"{sl_line}"
+            f"{tp_line}"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+
+    if signal == "BUY":
+        sl_line2 = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
+        tp_line2 = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
+        return (
+            f"🚨 *BIST SİNYALİ*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{symbol}*\n"
+            f"Sinyal: *BUY* 🟢\n"
+            f"Fiyat: `{price:.2f} TL`\n"
+            f"Güç: `{strength:.0%}`\n"
+            f"Sebep: {reason}\n"
+            f"Risk: *{risk}*\n"
+            f"{sl_line2}"
+            f"{tp_line2}"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+
+    if signal == "WATCH":
+        cond_line = f"Koşullar: `{n_met}/5`\n" if n_met is not None else ""
+        dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
+        return (
+            f"👀 *BIST TAKİP*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{symbol}*\n"
+            f"Sinyal: *WATCH* 🔵\n"
+            f"Fiyat: `{price:.2f} TL`\n"
+            f"Sebep: {reason}\n"
+            f"Risk: *{risk}*\n"
+            f"{cond_line}"
+            f"{dist_line}"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+
+    if signal == "LATE_BREAKOUT":
+        sl_line2 = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
+        tp_line2 = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
+        return (
+            f"🔴 *BIST GEÇ KIRILI*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{symbol}*\n"
+            f"Sinyal: *LATE BREAKOUT* 🔴\n"
+            f"Fiyat: `{price:.2f} TL`\n"
+            f"Güç: `{strength:.0%}`\n"
+            f"Sebep: {reason}\n"
+            f"Risk: *{risk}*\n"
+            f"{sl_line2}"
+            f"{tp_line2}"
+            f"⚠️ Hareket kaçmış olabilir — dikkatli olun\n"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+
+    # Bilinmeyen sinyal tipi — ham mesaj
+    return (
+        f"📊 *BIST — {signal}*\n"
+        f"Hisse: *{symbol}* | Fiyat: `{price:.2f} TL`\n"
+        f"{reason}\n{_DISCLAIMER}"
+    )
+
+
+def format_scan_summary(results: list[dict]) -> str:
+    """scan_market() çıktısının tamamı için özet mesaj formatlar."""
+    by_type = {
+        sig: [r for r in results if r.get("signal") == sig]
+        for sig in ("EARLY_WATCH", "SETUP", "BUY", "WATCH", "LATE_BREAKOUT")
+    }
+    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    ew  = len(by_type["EARLY_WATCH"])
+    st  = len(by_type["SETUP"])
+    bu  = len(by_type["BUY"])
+    wa  = len(by_type["WATCH"])
+    lat = len(by_type["LATE_BREAKOUT"])
+
+    lines = [
+        f"📊 *BIST Tarama Özeti*",
+        f"🕐 `{ts}`",
+        f"{'─' * 22}",
+        f"🟠 EARLY WATCH: `{ew}` | 🟡 SETUP: `{st}`",
+        f"🟢 BUY: `{bu}` | 🔵 WATCH: `{wa}` | 🔴 GEÇ: `{lat}`",
+    ]
+
+    if by_type["EARLY_WATCH"]:
+        lines.append("\n*🟠 Yaklaşan Kırılımlar:*")
+        for r in by_type["EARLY_WATCH"]:
+            sym  = _strip_is(r["symbol"])
+            dist = r.get("distance_to_res_pct")
+            dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
+
+    if by_type["SETUP"]:
+        lines.append("\n*🟡 Hazırlık Aşamasında:*")
+        for r in by_type["SETUP"]:
+            sym  = _strip_is(r["symbol"])
+            dist = r.get("distance_to_res_pct")
+            dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
+
+    if by_type["BUY"]:
+        lines.append("\n*🟢 AL Sinyalleri:*")
+        for r in by_type["BUY"]:
+            sym = _strip_is(r["symbol"])
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL` güç `{r['strength']:.0%}`")
+
+    if by_type["WATCH"]:
+        lines.append("\n*🔵 Takip Listesi:*")
+        for r in by_type["WATCH"]:
+            sym  = _strip_is(r["symbol"])
+            dist = r.get("distance_to_res_pct")
+            dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
+
+    if by_type["LATE_BREAKOUT"]:
+        lines.append("\n*🔴 Geç Kırılım (dikkat):*")
+        for r in by_type["LATE_BREAKOUT"]:
+            sym = _strip_is(r["symbol"])
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL` ⚠️")
+
+    if not any(by_type.values()):
+        lines.append("Aktif sinyal bulunamadı.")
+
+    lines.append(f"\n{_DISCLAIMER}")
+    return "\n".join(lines)
+
+
+def format_bist100_signals(buy_results: list[dict], top_n: int = 5) -> str:
+    """
+    BIST100 taramasının en güçlü BUY sinyallerini formatlar.
+    strength_score'a göre sıralı gelmesi beklenir.
+    """
+    if not buy_results:
+        return "🔍 BIST100 taramasında aktif BUY sinyali bulunamadı."
+
+    top = buy_results[:top_n]
+    number_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    lines = [
+        f"🚨 *BIST100 SİNYALLERİ*",
+        f"🕐 `{ts}`",
+        f"{'─' * 22}",
+    ]
+
+    for i, r in enumerate(top):
+        sym   = _strip_is(r.get("symbol", ""))
+        score = r.get("strength_score", 0)
+        price = r.get("price", 0.0)
+        reasons: list[str] = r.get("score_reasons") or []
+
+        emoji = number_emojis[i] if i < len(number_emojis) else f"{i + 1}\\."
+        lines.append(f"\n{emoji} *{sym}*")
+        lines.append(f"Skor: `{score}`")
+        lines.append(f"Fiyat: `{price:.2f} TL`")
+        if reasons:
+            lines.append("Sebep:")
+            for rr in reasons:
+                lines.append(f"  - {rr}")
+
+    lines.append(f"\n{'─' * 22}")
+    lines.append(_DISCLAIMER)
+    return "\n".join(lines)
+
+
+def format_bist100_early_signals(results: list[dict], top_n: int = 3) -> str:
+    """
+    BIST100 taramasının EARLY_WATCH + SETUP sinyallerini formatlar.
+    Kırılım öncesi fırsatlar listesi.
+    """
+    early_watch = [r for r in results if r.get("signal") == "EARLY_WATCH"]
+    setup       = [r for r in results if r.get("signal") == "SETUP"]
+
+    if not early_watch and not setup:
+        return ""
+
+    ts = datetime.now().strftime("%d.%m.%Y %H:%M")
+    lines = [
+        f"🔮 *BIST100 — Yaklaşan Fırsatlar*",
+        f"🕐 `{ts}`",
+        f"{'─' * 22}",
+    ]
+
+    if early_watch:
+        lines.append(f"\n*🟠 Kırılıma Yakın ({len(early_watch)} hisse):*")
+        for r in early_watch[:top_n]:
+            sym  = _strip_is(r.get("symbol", ""))
+            price = r.get("price", 0.0)
+            dist  = r.get("distance_to_res_pct")
+            dist_str = f" — direncin %{dist:.1f} altında" if dist and dist > 0 else ""
+            reason = r.get("reason", "")
+            lines.append(f"  🟠 *{sym}* `{price:.2f} TL`{dist_str}")
+            lines.append(f"     _{reason}_")
+
+    if setup:
+        lines.append(f"\n*🟡 Hazırlık Aşamasında ({len(setup)} hisse):*")
+        for r in setup[:top_n]:
+            sym  = _strip_is(r.get("symbol", ""))
+            price = r.get("price", 0.0)
+            dist  = r.get("distance_to_res_pct")
+            dist_str = f" — direncin %{dist:.1f} altında" if dist and dist > 0 else ""
+            lines.append(f"  🟡 *{sym}* `{price:.2f} TL`{dist_str}")
+
+    lines.append(f"\n{'─' * 22}")
+    lines.append(_DISCLAIMER)
+    return "\n".join(lines)
+
+
+def format_bist100_scan_report(report: dict) -> str:
+    """
+    scan_bist100() çıktısından tarama özeti mesajı formatlar.
+    Tüm sinyal tipleri için sayım içerir.
+    """
+    label        = report.get("label", "BIST100")
+    scanned      = report.get("scanned", 0)
+    buy_count    = report.get("buy_count", 0)
+    watch_count  = report.get("watch_count", 0)
+    setup_count  = report.get("setup_count", 0)
+    ew_count     = report.get("early_watch_count", 0)
+    late_count   = report.get("late_breakout_count", 0)
+    error_count  = report.get("error_count", 0)
+    elapsed      = report.get("elapsed_seconds", 0.0)
+    mf_status    = report.get("market_filter", "")
+    ts           = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    mf_emoji = "🟢" if mf_status == "favorable" else ("🔴" if mf_status == "unfavorable" else "🟡")
+
+    lines = [
+        f"📊 *{label} Tarama Raporu*",
+        f"🕐 `{ts}`",
+        f"{'─' * 22}",
+        f"🔍 Taranan: `{scanned}` hisse",
+        f"🟠 EARLY: `{ew_count}` | 🟡 SETUP: `{setup_count}`",
+        f"🟢 BUY: `{buy_count}` | 🔵 WATCH: `{watch_count}` | 🔴 GEÇ: `{late_count}`",
+        f"❌ Hata: `{error_count}` | ⏱ Süre: `{elapsed:.1f}s`",
+        f"{mf_emoji} Endeks: `{mf_status}`",
+    ]
+
+    results = report.get("results", [])
+
+    ew_list = [r for r in results if r.get("signal") == "EARLY_WATCH"]
+    if ew_list:
+        lines.append(f"\n*🟠 Yaklaşan Kırılımlar:*")
+        for r in ew_list[:3]:
+            sym  = _strip_is(r["symbol"])
+            dist = r.get("distance_to_res_pct")
+            dist_str = f" (%{dist:.1f})" if dist and dist > 0 else ""
+            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
+
+    buy_list = [r for r in results if r.get("signal") == "BUY"]
+    if buy_list:
+        lines.append(f"\n*🟢 En Güçlü BUY Sinyalleri:*")
+        for r in buy_list[:5]:
+            sym   = _strip_is(r["symbol"])
+            score = r.get("strength_score", 0)
+            price = r.get("price", 0.0)
+            lines.append(f"  • *{sym}* — `{price:.2f} TL` skor `{score}`")
+
+    lines.append(f"\n{_DISCLAIMER}")
+    return "\n".join(lines)
+
+
+def format_daily_summary(signals: list[dict]) -> str:
+    """Günlük sinyal özetini formatlar."""
+    buy  = sum(1 for s in signals if s.get("signal_type") == "BUY")
+    sell = sum(1 for s in signals if s.get("signal_type") == "SELL")
+    ts   = datetime.now().strftime("%d.%m.%Y")
+    return (
+        f"📈 *Günlük Özet — {ts}*\n"
+        f"{'─' * 22}\n"
+        f"Toplam sinyal: `{len(signals)}`\n"
+        f"🟢 Alış: `{buy}` | 🔴 Satış: `{sell}`"
+    )
+
+
+# ── Üst düzey yardımcı gönderici ─────────────────────────────────────────────
+
+async def notify_signal(result: dict) -> bool:
+    """Tek bir scan sonucunu formatlar ve gönderir."""
+    message = format_signal_message(result)
+    sent = await send_telegram_message(message)
+    if sent:
+        logger.info(f"Telegram sinyal bildirimi: {result.get('symbol')} {result.get('signal')}")
+    return sent
+
+
+async def notify_scan_summary(results: list[dict]) -> bool:
+    """Tarama özetini gönderir."""
+    if not results:
+        return False
+    return await send_telegram_message(format_scan_summary(results))
+
+
+# ── TelegramNotifier — geriye dönük uyumluluk ────────────────────────────────
+
+class TelegramNotifier:
+    """
+    Eski arayüz — generator.py ve diğer modüller bu sınıfı kullanır.
+    İç implementasyon modül düzeyindeki fonksiyonlara delege eder.
+    """
+
+    async def send_signal(self, signal, assessment) -> bool:
+        """StrategySignal + RiskAssessment → Telegram mesajı."""
+        from app.strategies.base import SignalType
+
+        sig_type  = signal.signal_type
+        direction = "ALIŞ" if sig_type == SignalType.BUY else "SATIŞ"
+        emoji     = "🟢" if sig_type == SignalType.BUY else "🔴"
+        sl        = assessment.adjusted_stop_loss
+        tp        = assessment.adjusted_take_profit
+
+        sl_line = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
+        tp_line = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
+        ts      = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+        message = (
+            f"{emoji} *{direction} SİNYALİ*\n"
+            f"{'─' * 22}\n"
+            f"Hisse: *{_strip_is(signal.symbol)}*\n"
+            f"Strateji: `{signal.strategy}`\n"
+            f"Güç: `{signal.strength:.0%}`\n"
+            f"Fiyat: `{signal.entry_price:.2f} TL`\n"
+            f"{sl_line}"
+            f"{tp_line}"
+            f"⚖️ R/R: `{assessment.risk_reward_ratio}`\n"
+            f"📝 {signal.notes}\n"
+            f"🕐 `{ts}`\n"
+            f"{'─' * 22}\n"
+            f"{_DISCLAIMER}"
+        )
+        return await send_telegram_message(message)
+
+    async def send_text(self, text: str) -> bool:
+        return await send_telegram_message(text)
+
+    async def send_daily_summary(self, signals: list) -> bool:
+        return await send_telegram_message(format_daily_summary(signals))
+
+
+notifier = TelegramNotifier()
