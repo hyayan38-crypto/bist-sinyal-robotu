@@ -22,8 +22,10 @@ _REQUIRED = [
     "resistance_20",
 ]
 
-_STOP_LOSS_PCT  = 0.03   # %3 aşağı
-_TAKE_PROFIT_PCT = 0.06  # %6 yukarı
+_STOP_LOSS_PCT  = 0.03   # %3 aşağı — ATR hesaplanamazsa yedek
+_TAKE_PROFIT_PCT = 0.06  # %6 yukarı — ATR hesaplanamazsa yedek
+_ATR_SL_MULT    = 1.5    # stop  = close − 1.5 × ATR  (volatiliteye uyarlı)
+_ATR_TP_MULT    = 3.0    # hedef = close + 3.0 × ATR  (R/R = 2.0)
 _VOLUME_MULT    = 1.8    # hacim çarpanı
 _RSI_LOW        = 50
 _RSI_HIGH       = 75
@@ -185,8 +187,7 @@ def generate_signal(df: pd.DataFrame) -> BreakoutSignal:
         details["daily_change_pct"] = round(daily_change_pct, 2)
         details["late_flags"]       = sum(triggered for triggered, _ in late_checks)
 
-        sl       = round(close * (1 - _STOP_LOSS_PCT), 2)
-        tp       = round(close * (1 + _TAKE_PROFIT_PCT), 2)
+        sl, tp   = _atr_sl_tp(close, atr)
         strength = _signal_strength(close, prev_resistance, volume_ratio, rsi, ema20, ema50)
 
         if any(triggered for triggered, _ in late_checks):
@@ -233,6 +234,20 @@ def generate_signal(df: pd.DataFrame) -> BreakoutSignal:
         failed.append(f"RSI14 {rsi:.1f} ∉ [{_RSI_LOW}–{_RSI_HIGH}]")
 
     return _hold(" | ".join(failed) if failed else "Koşullar sağlanmıyor", close, details)
+
+
+def _atr_sl_tp(close: float, atr: float) -> tuple[float, float]:
+    """
+    ATR bazlı stop-loss / take-profit.
+    ATR geçersizse (NaN/0) sabit yüzdeye düşer.
+    Aşırı volatil hisselerde stop %8'den, sakin hisselerde %1.5'tan
+    uzağa taşınmaz — yüzde sınırlarıyla kelepçelenir.
+    """
+    if atr and atr > 0 and not pd.isna(atr):
+        sl_dist = min(max(_ATR_SL_MULT * atr, close * 0.015), close * 0.08)
+        tp_dist = sl_dist * (_ATR_TP_MULT / _ATR_SL_MULT)
+        return round(close - sl_dist, 2), round(close + tp_dist, 2)
+    return round(close * (1 - _STOP_LOSS_PCT), 2), round(close * (1 + _TAKE_PROFIT_PCT), 2)
 
 
 # ── Yardımcı inşa fonksiyonları ───────────────────────────────────────────────

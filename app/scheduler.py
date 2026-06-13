@@ -29,6 +29,7 @@ from app.notifications.telegram import (
     format_bist100_signals,
     format_bist100_early_signals,
     format_bist100_scan_report,
+    format_bist100_full_report,
     send_telegram_message,
 )
 from app.signals.scanner import scan_bist100
@@ -91,27 +92,8 @@ async def run_bist100_scan(force_market_refresh: bool = False) -> dict:
         except Exception as exc:
             logger.error(f"Telegram gönderim hatası: {exc}")
 
-    # Önce yaklaşan fırsatlar (EARLY_WATCH + SETUP)
-    if early_watch_list or setup_list:
-        early_msg = format_bist100_early_signals(results, top_n=3)
-        if early_msg:
-            await _send(early_msg)
-
-    # BUY sinyalleri
-    if buy_list:
-        await _send(format_bist100_signals(buy_list, top_n=_TOP_SIGNALS))
-    elif not early_watch_list and not setup_list:
-        ts = started_at.strftime("%d.%m.%Y %H:%M")
-        await _send(
-            f"📊 *BIST100 Taraması — {ts}*\n"
-            f"{'─' * 22}\n"
-            f"🔍 Bugün aktif sinyal bulunamadı.\n"
-            + (f"🔵 WATCH: `{len(watch_list)}` hisse takip listesinde.\n" if watch_list else "")
-            + f"⚠️ Bu yatırım tavsiyesi değildir."
-        )
-
-    # Tarama istatistik raporu
-    await _send(format_bist100_scan_report(report))
+    # Tüm sinyal tiplerini tek mesajda gönder
+    await _send(format_bist100_full_report(report))
 
     return report
 

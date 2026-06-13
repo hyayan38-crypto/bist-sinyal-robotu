@@ -427,6 +427,98 @@ def format_bist100_scan_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _format_symbol_row(idx: int, r: dict) -> str:
+    """Bir sinyali kısa tek satır formatına çevirir."""
+    sym   = _strip_is(r.get("symbol", ""))
+    score = r.get("strength_score") or 0
+    price = r.get("price", 0.0)
+    rsi   = r.get("rsi_14")
+    vol   = r.get("volume_ratio")
+    dist  = r.get("distance_to_res_pct")
+    day   = r.get("daily_change_pct")
+    ema20 = r.get("close_to_ema20_pct")
+
+    rsi_s  = f"{rsi:.0f}"     if rsi  is not None else "–"
+    vol_s  = f"{vol:.2f}x"    if vol  is not None else "–"
+    dist_s = f"%{dist:.1f}"   if (dist is not None and dist > 0) else "–"
+    day_s  = f"%{day:+.1f}"   if day  is not None else "–"
+    ema_s  = f"%{ema20:+.1f}" if ema20 is not None else "–"
+
+    return (
+        f"{idx}) *{sym}* | Skor: `{score}` | Fiyat: `{price:.2f}` | "
+        f"RSI: `{rsi_s}` | Hacim: `{vol_s}` | "
+        f"Direnç: `{dist_s}` | Günlük: `{day_s}` | EMA20: `{ema_s}`"
+    )
+
+
+def format_bist100_full_report(report: dict, top_n: int = 5) -> str:
+    """
+    Tüm sinyal tiplerini tek Telegram mesajında birleştirir.
+    Sıra: EARLY_WATCH → SETUP → WATCH → BUY → LATE_BREAKOUT
+    Her bölümde en fazla top_n hisse; boş bölümler gösterilmez.
+    """
+    ts      = datetime.now().strftime("%d.%m.%Y %H:%M")
+    label   = report.get("label", "BIST100")
+    results = report.get("results", [])
+
+    sig_names = ("EARLY_WATCH", "SETUP", "WATCH", "BUY", "LATE_BREAKOUT")
+    by_type: dict[str, list[dict]] = {
+        sig: sorted(
+            [r for r in results if r.get("signal") == sig],
+            key=lambda r: -(r.get("strength_score") or 0),
+        )
+        for sig in sig_names
+    }
+
+    ew_n = len(by_type["EARLY_WATCH"])
+    st_n = len(by_type["SETUP"])
+    wa_n = len(by_type["WATCH"])
+    bu_n = len(by_type["BUY"])
+    la_n = len(by_type["LATE_BREAKOUT"])
+
+    scanned = report.get("scanned", 0)
+    errors  = report.get("error_count", 0)
+    elapsed = report.get("elapsed_seconds", 0.0)
+    mf      = report.get("market_filter", "")
+    mf_emoji = "🟢" if mf == "favorable" else ("🔴" if mf == "unfavorable" else "🟡")
+
+    lines = [
+        f"📊 *{label} Taraması* | `{ts}`",
+        f"{'─' * 22}",
+        f"🟠 EARLY: `{ew_n}` | 🟡 SETUP: `{st_n}` | 👀 WATCH: `{wa_n}` | 🟢 BUY: `{bu_n}` | 🔴 LATE: `{la_n}`",
+        f"{'─' * 22}",
+    ]
+
+    _SECTIONS = [
+        ("EARLY_WATCH",   "🟠 EARLY WATCH"),
+        ("SETUP",         "🟡 SETUP"),
+        ("WATCH",         "👀 WATCH"),
+        ("BUY",           "🟢 BUY"),
+        ("LATE_BREAKOUT", "🔴 LATE BREAKOUT"),
+    ]
+
+    any_signal = False
+    for sig, header in _SECTIONS:
+        items = by_type[sig][:top_n]
+        if not items:
+            continue
+        any_signal = True
+        lines.append(f"\n*{header}*")
+        for i, r in enumerate(items, 1):
+            lines.append(_format_symbol_row(i, r))
+
+    if not any_signal:
+        lines.append("\nAktif sinyal bulunamadı.")
+
+    lines.append(f"\n{'─' * 22}")
+    lines.append(
+        f"🔍 `{scanned}` hisse | ❌ `{errors}` hata | "
+        f"⏱ `{elapsed:.1f}s` | {mf_emoji} `{mf}`"
+    )
+    lines.append(_DISCLAIMER)
+    return "\n".join(lines)
+
+
 def format_daily_summary(signals: list[dict]) -> str:
     """Günlük sinyal özetini formatlar."""
     buy  = sum(1 for s in signals if s.get("signal_type") == "BUY")

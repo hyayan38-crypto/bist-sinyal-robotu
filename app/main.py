@@ -493,23 +493,6 @@ async def scheduler_run_now(background_tasks: BackgroundTasks):
     }
 
 
-@app.post(
-    "/scheduler/update",
-    summary="Tarama saatini güncelle",
-    tags=["Zamanlayıcı"],
-)
-async def scheduler_update(
-    hour: int = Query(..., ge=0, le=23, description="Saat (0-23)"),
-    minute: int = Query(..., ge=0, le=59, description="Dakika (0-59)"),
-):
-    """Günlük tarama saatini günceller (Türkiye saati)."""
-    scheduler.update_schedule(hour, minute)
-    return {
-        "message": f"Zamanlama güncellendi → {hour:02d}:{minute:02d} TR saati",
-        "next_run": scheduler.next_run_time(),
-    }
-
-
 @app.get("/market-filter", summary="XU100 endeks filtresi", tags=["Sistem"])
 async def market_filter_status(refresh: bool = False):
     """XU100 Close > EMA50 kontrolü. `?refresh=true` önbelleği sıfırlar."""

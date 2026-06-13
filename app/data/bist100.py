@@ -23,8 +23,8 @@ BIST30_SYMBOLS: list[str] = [
     "HEKTS.IS",  # Hektaş Ticaret
     "ISCTR.IS",  # İş Bankası (C)
     "KCHOL.IS",  # Koç Holding
-    "KOZAL.IS",  # Koza Altın İşletmeleri
-    "KOZAA.IS",  # Koza Anadolu Metal Madencilik
+    "BRSAN.IS",  # Borusan Boru (KOZAL yerine — yfinance veri vermiyor)
+    "AKSEN.IS",  # Aksa Enerji (KOZAA yerine — yfinance veri vermiyor)
     "KRDMD.IS",  # Kardemir (D)
     "PETKM.IS",  # Petkim Petrokimya
     "PGSUS.IS",  # Pegasus Hava Yolları
@@ -77,7 +77,7 @@ _BIST100_EXTRA: list[str] = [
     "AGHOL.IS",  # AG Anadolu Grubu Holding
     "ALARK.IS",  # Alarko Holding
     "ALBRK.IS",  # Albaraka Türk Katılım Bankası
-    "ANACM.IS",  # Anadolu Cam Sanayii
+    "KONTR.IS",  # Kontrolmatik Teknoloji (ANACM yerine — Şişecam çatısına geçti)
     "ANSGR.IS",  # Anadolu Sigorta
     "ARSAN.IS",  # Arsan Tekstil Ticaret
     "ASTOR.IS",  # Astor Enerji
@@ -97,7 +97,7 @@ _BIST100_EXTRA: list[str] = [
     "GLYHO.IS",  # Global Yatırım Holding
     "GOODY.IS",  # Goodyear Lastikleri
     "HURGZ.IS",  # Hürriyet Gazetecilik
-    "IPEKE.IS",  # İpek Doğal Enerji
+    "SMRTG.IS",  # Smart Güneş Enerjisi (IPEKE yerine — yfinance veri vermiyor)
     "ISDMR.IS",  # İskenderun Demir Çelik
     "ISGYO.IS",  # İş GYO
     "ISYAT.IS",  # İş Yatırım Menkul Değerler
@@ -105,23 +105,23 @@ _BIST100_EXTRA: list[str] = [
     "KARSN.IS",  # Karsan Otomotiv
     "KATMR.IS",  # Katmerciler
     "KENT.IS",   # Kent Gıda Maddeleri
-    "KERVT.IS",  # Kervansaray Yatırım Holding
+    "MIATK.IS",  # Mia Teknoloji (KERVT yerine — kottan çıktı)
     "NETAS.IS",  # Netaş Telekomünikasyon
-    "QNBFL.IS",  # QNB Finans Finansal Kiralama
+    "CWENE.IS",  # CW Enerji (QNBFL yerine — kottan çıktı)
     "SELEC.IS",  # Selçuk Ecza Deposu
     "ULKER.IS",  # Ülker Bisküvi
     "VESTL.IS",  # Vestel Elektronik
     "GOLTS.IS",  # Göltaş Çimento
     "PRKME.IS",  # Park Elektrik Madencilik
     "ORGE.IS",   # Orge Enerji Elektrik
-    "DENTA.IS",  # Dentaş Ambalaj
+    "YEOTK.IS",  # Yeo Teknoloji Enerji (DENTA yerine — kottan çıktı)
     "MPARK.IS",  # MLP Sağlık Hizmetleri
     "CLEBI.IS",  # Çelebi Hava Servisi
     "TURSG.IS",  # Türkiye Sigorta
     "EUPWR.IS",  # Europower Enerji
     "AKFGY.IS",  # Akfen GYO
     "GESAN.IS",  # Gesan Enerji
-    "MIPAZ.IS",  # Milpa Ticari ve Sınai Ürünler
+    "ALFAS.IS",  # Alfa Solar Enerji (MIPAZ yerine — kottan çıktı)
     "GRSEL.IS",  # GR Sigorta
 ]
 

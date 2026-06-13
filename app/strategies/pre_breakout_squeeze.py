@@ -27,15 +27,15 @@ _REQUIRED = [
 
 _SETUP_RSI_LOW    = 45
 _SETUP_RSI_HIGH   = 65
-_SETUP_VOL_LOW    = 0.7
-_SETUP_VOL_HIGH   = 1.6
-_SETUP_DIST_MAX   = 5.0    # % direnç altında maksimum uzaklık
+_SETUP_VOL_LOW    = 0.6
+_SETUP_VOL_HIGH   = 1.8
+_SETUP_DIST_MAX   = 8.0    # % direnç altında maksimum uzaklık
 _SETUP_BB_PCTILE  = 0.40   # bb_width son 60 günün alt %40'ında
 
 # ── EARLY_WATCH eşikleri ──────────────────────────────────────────────────────
 
-_EARLY_DIST_MAX  = 2.0
-_EARLY_VOL_MIN   = 1.2
+_EARLY_DIST_MAX  = 3.0     # dirence ≤%3 (2.0 çok dardı — sinyal hiç üretilmiyordu)
+_EARLY_VOL_MIN   = 1.15    # hacim canlanma eşiği (1.2 → 1.15)
 _EARLY_MIN_FLAGS = 3       # 4 spesifik koşuldan en az kaçı sağlanmalı
 
 # EARLY_WATCH kalite filtreleri — aşılırsa EARLY_WATCH üretilmez
@@ -180,6 +180,15 @@ def generate_setup_signal(df: pd.DataFrame) -> SetupSignal:
         "close_strengthening":  close_strengthening,
         "setup_conditions_met": setup_met,
         "early_conditions_met": early_met,
+        "ew_flags": {
+            "above_ema50":   s2_above_ema50,
+            "rsi_in_range":  (_SETUP_RSI_LOW - 5) <= rsi <= _SETUP_RSI_HIGH,
+            "dist_lte_2pct": ew1_distance,
+            "vol_gte_1_2":   ew2_volume,
+            "momentum":      bool(ew3_macd or ew4_close),
+            "setup_met_3":   setup_met >= 3,
+            "quality_ok":    ew_quality_ok,
+        },
     }
 
     # ── EARLY_WATCH: zorunlu + momentum + kalite filtreleri ───────────────────
@@ -193,13 +202,13 @@ def generate_setup_signal(df: pd.DataFrame) -> SetupSignal:
         and ew_quality_ok       # kalite filtreleri
     )
 
-    # ── SETUP: zorunlu koşullar + squeeze veya BB daralmasından en az biri ────
+    # ── SETUP: squeeze zorunlu; BB daralması isteğe bağlı (strength'e katkı verir) ──
     is_setup = (
-        s2_above_ema50
+        s1_squeeze
+        and s2_above_ema50
         and s3_rsi
         and s4_volume
         and s5_distance
-        and (s1_squeeze or s6_bb_low)   # sıkışma veya BB daralması — en az biri
     )
 
     if is_early_watch:
@@ -222,7 +231,8 @@ def generate_setup_signal(df: pd.DataFrame) -> SetupSignal:
         sl       = round(ema_50 * _SETUP_SL_MULT, 2)
         tp_raw   = round(prev_resistance * _SETUP_TP_MULT, 2)
         tp       = tp_raw if tp_raw > close else None
-        strength = 0.85  # tüm 6 koşul karşılandı; EARLY_WATCH'tan düşük
+        bb_bonus = 0.10 if s6_bb_low else 0.0
+        strength = round(0.72 + bb_bonus, 2)  # BB daralması varsa +0.10 bonus
         return SetupSignal(
             signal="SETUP",
             reason=_setup_reason(s1_squeeze, s6_bb_low, rsi, volume_ratio, distance_to_res_pct),

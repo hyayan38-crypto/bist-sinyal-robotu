@@ -24,6 +24,8 @@ from app.data.fetcher import fetch_symbol_data, FetchError
 
 _XU100_SYMBOL  = "XU100.IS"   # yfinance sembolü
 _EMA_PERIOD    = 50
+_EMA_FAST      = 20            # kısa vadeli trend kontrolü için
+_SOFT_BAND_PCT = 0.02          # EMA50'nin %2 altına kadar tolerans bandı
 _CACHE_TTL_SEC = 3600          # 1 saat — gün içi taramalarda tekrar çekmez
 
 # ── Durum sabitleri ───────────────────────────────────────────────────────────
@@ -142,8 +144,25 @@ def is_market_favorable(
     xu100_close = float(df["close"].iloc[-1])
     xu100_ema50 = float(ema_series.iloc[-1])
 
+    ema20_series = ta.ema(df["close"], length=_EMA_FAST)
+    xu100_ema20 = (
+        float(ema20_series.iloc[-1])
+        if ema20_series is not None and not ema20_series.dropna().empty
+        else None
+    )
+
     # ── Karar ─────────────────────────────────────────────────────────────────
+    # favorable      : close > EMA50
+    # yumuşak bant   : close, EMA50'nin %2 bandı içinde VE EMA20 > EMA50
+    #                  (sığ geri çekilme — kısa vadeli trend bozulmamış)
+    # unfavorable    : geri kalan her şey
     pct_diff = (xu100_close - xu100_ema50) / xu100_ema50 * 100
+
+    soft_ok = (
+        xu100_close >= xu100_ema50 * (1 - _SOFT_BAND_PCT)
+        and xu100_ema20 is not None
+        and xu100_ema20 > xu100_ema50
+    )
 
     if xu100_close > xu100_ema50:
         filter_result = MarketFilterResult(
@@ -152,6 +171,17 @@ def is_market_favorable(
             reason=(
                 f"XU100 {xu100_close:.0f} > EMA50 {xu100_ema50:.0f} "
                 f"(+{pct_diff:.1f}%) — piyasa yükseliş trendinde"
+            ),
+            xu100_close=round(xu100_close, 2),
+            xu100_ema50=round(xu100_ema50, 2),
+        )
+    elif soft_ok:
+        filter_result = MarketFilterResult(
+            favorable=True,
+            status=STATUS_FAVORABLE,
+            reason=(
+                f"XU100 {xu100_close:.0f} EMA50 {xu100_ema50:.0f} hafif altında "
+                f"({pct_diff:.1f}%) ama EMA20 > EMA50 — sığ geri çekilme, AL açık (temkinli)"
             ),
             xu100_close=round(xu100_close, 2),
             xu100_ema50=round(xu100_ema50, 2),

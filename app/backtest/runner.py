@@ -30,6 +30,8 @@ from app.strategies.trend_breakout import (
     generate_signal as tb_generate,
     _STOP_LOSS_PCT,
     _TAKE_PROFIT_PCT,
+    _ATR_SL_MULT,
+    _ATR_TP_MULT,
     _VOLUME_MULT,
     _RSI_LOW,
     _RSI_HIGH,
@@ -93,6 +95,9 @@ class TrendBreakoutBT(Strategy):
     volume_mult       = _VOLUME_MULT
     stop_loss_pct     = _STOP_LOSS_PCT
     take_profit_pct   = _TAKE_PROFIT_PCT
+    atr_sl_mult       = _ATR_SL_MULT
+    atr_tp_mult       = _ATR_TP_MULT
+    risk_per_trade    = _RISK_PER_TRADE
     position_size     = _POSITION_SIZE
 
     def init(self):
@@ -138,11 +143,21 @@ class TrendBreakoutBT(Strategy):
         if not all([c1, c2, c3, c4, c5]):
             return
 
-        sl = close * (1 - self.stop_loss_pct)
-        tp = close * (1 + self.take_profit_pct)
+        # ATR bazlı SL/TP — trend_breakout._atr_sl_tp ile aynı mantık
+        if atr > 0 and not math.isnan(atr):
+            sl_dist = min(max(self.atr_sl_mult * atr, close * 0.015), close * 0.08)
+            tp_dist = sl_dist * (self.atr_tp_mult / self.atr_sl_mult)
+            sl = close - sl_dist
+            tp = close + tp_dist
+        else:
+            sl = close * (1 - self.stop_loss_pct)
+            tp = close * (1 + self.take_profit_pct)
 
-        # Pozisyon büyüklüğü: risk/sermaye = %1, stop = %3 → ~%33
-        size = min(self.position_size, 0.95)   # maksimum %95 sermaye
+        # Risk paritesi: işlem başına sermayenin %1'i riske edilir
+        stop_dist_pct = (close - sl) / close
+        size = min(self.risk_per_trade / stop_dist_pct, 0.95)
+        if size <= 0:
+            return
         self.buy(sl=sl, tp=tp, size=size)
 
 

@@ -114,15 +114,14 @@ class TestSetupSignal:
         result = generate_setup_signal(df)
         assert 0.0 <= result["strength"] <= 1.0
 
-    def test_squeeze_false_but_bb_low_still_setup(self):
-        """squeeze=False ama bb_low=True → SETUP hâlâ gelebilir (en az biri yeterli)."""
+    def test_squeeze_false_no_setup_regardless_of_bb_low(self):
+        """squeeze=False → SETUP gelmez; artık squeeze zorunlu koşul."""
         df = _base_df()
         df["volatility_squeeze"] = False
         df["macd_hist"] = np.full(len(df), 0.3)
         result = generate_setup_signal(df)
-        # bb_width tüm satırlarda aynı → quantile = aynı değer → bb_low=True
-        # (s1 OR s6) = (False OR True) = True → SETUP gelebilir
-        assert result["signal"] in ("SETUP", "HOLD", "EARLY_WATCH")
+        # squeeze zorunlu olduğundan bb_low=True olsa bile SETUP üretilmez
+        assert result["signal"] != "SETUP"
 
     def test_hold_when_neither_squeeze_nor_bb_low(self):
         """squeeze=False VE bb_width genişlemiş → (s1 OR s6) = False → SETUP gelmez."""
@@ -324,14 +323,14 @@ class TestEarlyWatchSignal:
         assert "daily_change_pct" in result["details"]
         assert "close_to_ema20_pct" in result["details"]
 
-    def test_setup_with_only_bb_low_no_squeeze(self):
-        """squeeze=False ama bb_low=True → SETUP gelebilir (gevşetilmiş kural)."""
+    def test_setup_requires_squeeze_not_only_bb_low(self):
+        """squeeze=False, bb_low=True → squeeze zorunlu olduğundan SETUP gelmez."""
         df = _base_df()
         df["volatility_squeeze"] = False
-        df["bb_width"] = 1.0    # çok düşük → alt %40'ta kesinlikle
+        df["bb_width"] = 1.0    # çok düşük → bb_low=True, ama squeeze=False
         df["macd_hist"] = np.full(len(df), 0.3)
         result = generate_setup_signal(df)
-        assert result["signal"] in ("SETUP", "EARLY_WATCH")
+        assert result["signal"] != "SETUP"
 
     def test_setup_with_only_squeeze_no_bb_low(self):
         """squeeze=True ama bb_low=False → SETUP gelebilir (gevşetilmiş kural)."""

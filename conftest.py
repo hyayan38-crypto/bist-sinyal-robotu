@@ -30,14 +30,18 @@ def _mock_scheduler_global():
         mock_sched.stop   = MagicMock()
         mock_sched.status = MagicMock(return_value={
             "running": True,
-            "schedule": "Her gün 18:10 TR saati",
-            "next_run": "17.05.2026 18:10 +03",
+            "schedule": "Pazartesi-Cuma 10:30, 12:30, 15:30, 18:10 TR saati",
             "timezone": "Europe/Istanbul",
-            "job_id": "daily_bist_scan",
-            "symbol_count": 15,
+            "jobs": [
+                {"id": "bist100_scan_acilis", "name": "BIST100 Tarama 10:30",
+                 "next_run": "17.05.2026 10:30 +03"},
+                {"id": "bist100_scan_gun_sonu", "name": "BIST100 Tarama 18:10",
+                 "next_run": "17.05.2026 18:10 +03"},
+            ],
+            "next_run": "17.05.2026 10:30 +03",
+            "scan_universe": "BIST100 (100 hisse)",
         })
-        mock_sched.next_run_time   = MagicMock(return_value="17.05.2026 18:10 +03")
-        mock_sched.update_schedule = MagicMock()
+        mock_sched.next_run_time = MagicMock(return_value="17.05.2026 10:30 +03")
         yield
 
 

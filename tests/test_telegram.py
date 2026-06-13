@@ -14,6 +14,7 @@ from app.notifications.telegram import (
     format_scan_summary,
     format_daily_summary,
     format_bist100_early_signals,
+    format_bist100_full_report,
     is_configured,
     _strip_is,
     _DISCLAIMER,
@@ -385,6 +386,124 @@ class TestNewSignalFormats:
         results = [_late_result()]
         msg = format_scan_summary(results)
         assert "SISE" in msg
+
+
+# ── format_bist100_full_report ────────────────────────────────────────────────
+
+def _full_result(signal: str, symbol: str, score: int, **kw) -> dict:
+    base = {
+        "symbol": f"{symbol}.IS", "signal": signal, "price": 100.0,
+        "reason": "test", "risk_level": "LOW", "strength": 0.7,
+        "stop_loss": 97.0, "take_profit": 106.0,
+        "conditions_met": 4, "distance_to_res_pct": 3.0,
+        "strength_score": score,
+        "rsi_14": 58.0, "volume_ratio": 1.2,
+        "daily_change_pct": 0.8, "close_to_ema20_pct": 1.5,
+    }
+    return {**base, **kw}
+
+
+def _make_report(results: list, **kw) -> dict:
+    base = {
+        "label": "BIST100", "results": results,
+        "scanned": 100, "buy_count": 0, "watch_count": 0,
+        "setup_count": 0, "early_watch_count": 0, "late_breakout_count": 0,
+        "error_count": 3, "elapsed_seconds": 21.0, "market_filter": "unfavorable",
+    }
+    return {**base, **kw}
+
+
+class TestFormatBist100FullReport:
+    def test_summary_line_contains_all_types(self):
+        msg = format_bist100_full_report(_make_report([]))
+        for keyword in ("EARLY", "SETUP", "WATCH", "BUY", "LATE"):
+            assert keyword in msg
+
+    def test_empty_sections_not_shown(self):
+        msg = format_bist100_full_report(_make_report([]))
+        # Bölüm başlıkları *bold* formatında — özet satırındaki 🟢 BUY: ile karışmaz
+        assert "*🟠 EARLY WATCH*" not in msg
+        assert "*🟢 BUY*" not in msg
+
+    def test_section_shown_when_signal_exists(self):
+        r = _full_result("BUY", "ASELS", 80)
+        msg = format_bist100_full_report(_make_report([r], buy_count=1))
+        assert "*🟢 BUY*" in msg
+        assert "ASELS" in msg
+
+    def test_symbol_row_contains_required_fields(self):
+        r = _full_result("WATCH", "THYAO", 65,
+                         rsi_14=57.0, volume_ratio=1.18,
+                         distance_to_res_pct=5.4, daily_change_pct=1.2,
+                         close_to_ema20_pct=2.8)
+        msg = format_bist100_full_report(_make_report([r], watch_count=1))
+        assert "THYAO" in msg
+        assert "65" in msg      # score
+        assert "57" in msg      # rsi
+        assert "1.18x" in msg   # volume
+        assert "%5.4" in msg    # direnç
+        assert "%+1.2" in msg   # günlük
+        assert "%+2.8" in msg   # ema20
+
+    def test_max_5_per_section(self):
+        results = [_full_result("BUY", f"SY{i:02d}", 90 - i) for i in range(8)]
+        msg = format_bist100_full_report(_make_report(results, buy_count=8))
+        assert "SY00" in msg
+        assert "SY04" in msg
+        assert "SY05" not in msg
+
+    def test_section_order_ew_before_buy(self):
+        ew  = _full_result("EARLY_WATCH", "EREGL", 70)
+        buy = _full_result("BUY", "ASELS", 85)
+        msg = format_bist100_full_report(_make_report([ew, buy]))
+        assert msg.find("*🟠 EARLY WATCH*") < msg.find("*🟢 BUY*")
+
+    def test_section_order_all_five(self):
+        results = [
+            _full_result("LATE_BREAKOUT", "LATE1", 50),
+            _full_result("BUY",           "BUY1",  80),
+            _full_result("WATCH",         "WAT1",  40),
+            _full_result("SETUP",         "SET1",  60),
+            _full_result("EARLY_WATCH",   "EWA1",  70),
+        ]
+        msg = format_bist100_full_report(_make_report(results))
+        positions = {
+            "EW":    msg.find("*🟠 EARLY WATCH*"),
+            "SETUP": msg.find("*🟡 SETUP*"),
+            "WATCH": msg.find("*👀 WATCH*"),
+            "BUY":   msg.find("*🟢 BUY*"),
+            "LATE":  msg.find("*🔴 LATE BREAKOUT*"),
+        }
+        assert positions["EW"] < positions["SETUP"] < positions["WATCH"] < positions["BUY"] < positions["LATE"]
+
+    def test_no_section_header_when_empty(self):
+        r = _full_result("BUY", "ASELS", 80)
+        msg = format_bist100_full_report(_make_report([r], buy_count=1))
+        assert "*🟠 EARLY WATCH*" not in msg
+        assert "*🟡 SETUP*" not in msg
+
+    def test_disclaimer_present(self):
+        msg = format_bist100_full_report(_make_report([]))
+        assert _DISCLAIMER in msg
+
+    def test_footer_contains_stats(self):
+        msg = format_bist100_full_report(_make_report([], scanned=100, error_count=5, elapsed_seconds=20.5))
+        assert "100" in msg
+        assert "5" in msg
+        assert "20.5" in msg
+
+    def test_dist_dash_when_zero(self):
+        """BUY sinyalinde distance=0.0 → Direnç: – gösterilmeli."""
+        r = _full_result("BUY", "ASELS", 80, distance_to_res_pct=0.0)
+        msg = format_bist100_full_report(_make_report([r], buy_count=1))
+        assert "Direnç: `–`" in msg
+
+    def test_none_fields_show_dash(self):
+        r = _full_result("WATCH", "THYAO", 50,
+                         rsi_14=None, volume_ratio=None,
+                         daily_change_pct=None, close_to_ema20_pct=None)
+        msg = format_bist100_full_report(_make_report([r], watch_count=1))
+        assert "–" in msg
 
 
 # ── notify_signal ─────────────────────────────────────────────────────────────

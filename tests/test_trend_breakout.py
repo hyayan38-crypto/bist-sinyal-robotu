@@ -69,14 +69,19 @@ class TestBuySignal:
         assert result["signal"] == "BUY"
 
     def test_buy_sets_stop_loss(self):
+        # ATR bazlı stop: %1.5–%8 bandında, fiyatın altında
         result = generate_signal(_base_df())
         price = result["price"]
-        assert result["stop_loss"] == round(price * (1 - _STOP_LOSS_PCT), 2)
+        sl_dist = price - result["stop_loss"]
+        assert price * 0.015 - 0.01 <= sl_dist <= price * 0.08 + 0.01
 
     def test_buy_sets_take_profit(self):
+        # Hedef mesafesi = 2 × stop mesafesi (R/R = 2.0)
         result = generate_signal(_base_df())
         price = result["price"]
-        assert result["take_profit"] == round(price * (1 + _TAKE_PROFIT_PCT), 2)
+        sl_dist = price - result["stop_loss"]
+        tp_dist = result["take_profit"] - price
+        assert abs(tp_dist - 2 * sl_dist) <= 0.05
 
     def test_buy_strength_in_range(self):
         result = generate_signal(_base_df())

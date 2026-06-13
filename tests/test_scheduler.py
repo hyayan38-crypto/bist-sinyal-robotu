@@ -2,12 +2,11 @@
 Zamanlayıcı testleri — gerçek APScheduler ve Telegram çağrısı yapılmaz.
 """
 
-import asyncio
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 
-from app.scheduler import BISTScheduler, run_daily_scan
+from app.scheduler import BISTScheduler, run_daily_scan, _SCAN_TIMES
 from app.main import app
 
 
@@ -18,23 +17,42 @@ def _make_scheduler() -> BISTScheduler:
     return BISTScheduler()
 
 
-def _mock_scan_results(buy: int = 2, watch: int = 1) -> list[dict]:
+def _mock_results(buy: int = 2, watch: int = 1) -> list[dict]:
     results = []
     for i in range(buy):
         results.append({
             "signal": "BUY", "symbol": f"SYM{i}.IS", "price": 100.0 + i,
             "reason": "test", "risk_level": "LOW", "strength": 0.7,
-            "stop_loss": 97.0, "take_profit": 106.0,
+            "strength_score": 70, "stop_loss": 97.0, "take_profit": 106.0,
             "market_filter": "favorable", "conditions_met": 5, "distance_to_res_pct": 0.0,
         })
     for i in range(watch):
         results.append({
             "signal": "WATCH", "symbol": f"WCH{i}.IS", "price": 80.0 + i,
             "reason": "test", "risk_level": "LOW", "strength": 0.4,
-            "stop_loss": None, "take_profit": None,
+            "strength_score": 40, "stop_loss": None, "take_profit": None,
             "market_filter": "favorable", "conditions_met": 4, "distance_to_res_pct": 1.5,
         })
     return results
+
+
+def _mock_report(buy: int = 2, watch: int = 1) -> dict:
+    """scan_bist100'ün döndürdüğü rapor dict'inin test taklidi."""
+    results = _mock_results(buy, watch)
+    return {
+        "label": "BIST100",
+        "results": results,
+        "scanned": len(results),
+        "buy_count": buy,
+        "watch_count": watch,
+        "setup_count": 0,
+        "early_watch_count": 0,
+        "late_breakout_count": 0,
+        "error_count": 0,
+        "error_symbols": [],
+        "elapsed_seconds": 1.2,
+        "market_filter": "favorable",
+    }
 
 
 # ── BISTScheduler ─────────────────────────────────────────────────────────────
@@ -63,20 +81,24 @@ class TestBISTScheduler:
         s = _make_scheduler()
         s.stop()   # başlatmadan durdurmak hata vermemeli
 
-    def test_is_eklendi(self):
+    def test_tum_taramalar_eklendi(self):
         s = _make_scheduler()
         try:
             s.start()
-            job = s._scheduler.get_job(s._job_id)
-            assert job is not None
-            assert job.id == s._job_id
+            jobs = s._scheduler.get_jobs()
+            assert len(jobs) == len(_SCAN_TIMES)
+            job_ids = {j.id for j in jobs}
+            for _h, _m, label in _SCAN_TIMES:
+                assert f"bist100_scan_{label}" in job_ids
         finally:
             s.stop()
 
-    def test_varsayilan_saat_18_10(self):
-        s = _make_scheduler()
-        assert s._hour == 18
-        assert s._minute == 10
+    def test_dort_tarama_saati(self):
+        # 10:30 · 12:30 · 15:30 · 18:10
+        assert len(_SCAN_TIMES) == 4
+        saatler = {(h, m) for h, m, _ in _SCAN_TIMES}
+        assert (10, 30) in saatler
+        assert (18, 10) in saatler
 
     def test_status_dict_doner(self):
         s = _make_scheduler()
@@ -93,8 +115,9 @@ class TestBISTScheduler:
             s.start()
             status = s.status()
             for key in ("running", "schedule", "next_run", "timezone",
-                        "job_id", "symbol_count"):
+                        "jobs", "scan_universe"):
                 assert key in status, f"'{key}' eksik"
+            assert len(status["jobs"]) == len(_SCAN_TIMES)
         finally:
             s.stop()
 
@@ -120,19 +143,9 @@ class TestBISTScheduler:
             s.start()
             nrt = s.next_run_time()
             assert nrt is not None
-            assert "18:10" in nrt
-        finally:
-            s.stop()
-
-    def test_update_schedule_saati_gunceller(self):
-        s = _make_scheduler()
-        try:
-            s.start()
-            s.update_schedule(9, 30)
-            assert s._hour == 9
-            assert s._minute == 30
-            nrt = s.next_run_time()
-            assert "09:30" in nrt
+            # En yakın çalışma zamanı 4 tarama saatinden biri olmalı
+            saat_str = [f"{h:02d}:{m:02d}" for h, m, _ in _SCAN_TIMES]
+            assert any(t in nrt for t in saat_str)
         finally:
             s.stop()
 
@@ -141,66 +154,55 @@ class TestBISTScheduler:
 
 class TestRunDailyScan:
     @pytest.mark.asyncio
-    async def test_buy_sinyali_varsa_mesaj_gonderilir(self):
-        results = _mock_scan_results(buy=2, watch=1)
-        with patch("app.scheduler.scan_market", return_value=results):
+    async def test_sinyal_varsa_mesaj_gonderilir(self):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=2, watch=1)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
-                outcome = await run_daily_scan()
-        assert mock_send.call_count >= 1   # en az özet mesajı
-
-    @pytest.mark.asyncio
-    async def test_sinyal_yoksa_bilgi_mesaji(self):
-        with patch("app.scheduler.scan_market", return_value=[]):
-            with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
-                outcome = await run_daily_scan()
+                await run_daily_scan()
+        # Tek tam rapor mesajı gönderilir
         assert mock_send.call_count == 1
-        msg = mock_send.call_args.args[0]
-        assert "bulunamadı" in msg.lower()
 
     @pytest.mark.asyncio
-    async def test_sonuc_dict_doner(self):
-        with patch("app.scheduler.scan_market", return_value=_mock_scan_results(1, 0)):
+    async def test_sinyal_yoksa_da_rapor_gonderilir(self):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=0, watch=0)):
+            with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
+                await run_daily_scan()
+        # Sinyal olmasa da tarama raporu gönderilir
+        assert mock_send.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_rapor_dict_doner(self):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(1, 0)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock):
-                outcome = await run_daily_scan()
-        assert isinstance(outcome, dict)
-        assert "buy" in outcome
-        assert "watch" in outcome
-        assert "scanned" in outcome
+                report = await run_daily_scan()
+        assert isinstance(report, dict)
+        assert "buy_count" in report
+        assert "scanned" in report
 
     @pytest.mark.asyncio
     async def test_buy_sayisi_dogru(self):
-        with patch("app.scheduler.scan_market", return_value=_mock_scan_results(buy=3, watch=0)):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=3, watch=0)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock):
-                outcome = await run_daily_scan()
-        assert outcome["buy"] == 3
+                report = await run_daily_scan()
+        assert report["buy_count"] == 3
 
     @pytest.mark.asyncio
-    async def test_scan_market_cagrilir(self):
-        with patch("app.scheduler.scan_market", return_value=[]) as mock_scan:
+    async def test_scan_bist100_cagrilir(self):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(0, 0)) as mock_scan:
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock):
                 await run_daily_scan()
         assert mock_scan.called
 
     @pytest.mark.asyncio
     async def test_force_market_refresh_true(self):
-        with patch("app.scheduler.scan_market", return_value=[]) as mock_scan:
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(0, 0)) as mock_scan:
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock):
                 await run_daily_scan()
         call_kwargs = mock_scan.call_args.kwargs
         assert call_kwargs.get("force_market_refresh") is True
 
     @pytest.mark.asyncio
-    async def test_her_buy_icin_ayri_mesaj(self):
-        results = _mock_scan_results(buy=3, watch=0)
-        with patch("app.scheduler.scan_market", return_value=results):
-            with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
-                await run_daily_scan()
-        # 3 BUY mesajı + 1 özet = 4 çağrı
-        assert mock_send.call_count == 4
-
-    @pytest.mark.asyncio
     async def test_telegram_hatasi_exception_firlatmaz(self):
-        with patch("app.scheduler.scan_market", return_value=_mock_scan_results(1, 0)):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(1, 0)):
             with patch("app.scheduler.send_telegram_message",
                        new_callable=AsyncMock, side_effect=Exception("bağlantı hatası")):
                 try:
@@ -223,7 +225,7 @@ class TestSchedulerAPI:
 
     def test_status_alanlari(self, client):
         body = client.get("/scheduler/status").json()
-        for key in ("running", "schedule", "next_run", "timezone", "symbol_count"):
+        for key in ("running", "schedule", "next_run", "timezone", "scan_universe"):
             assert key in body
 
     def test_status_running_true(self, client):
@@ -245,21 +247,3 @@ class TestSchedulerAPI:
             body = client.post("/scheduler/run-now").json()
         assert "message" in body
         assert "symbols" in body
-
-    def test_update_schedule_200(self, client):
-        r = client.post("/scheduler/update?hour=9&minute=30")
-        assert r.status_code == 200
-
-    def test_update_schedule_yanit(self, client):
-        body = client.post("/scheduler/update?hour=10&minute=0").json()
-        assert "next_run" in body
-        # Saati geri al
-        client.post("/scheduler/update?hour=18&minute=10")
-
-    def test_update_gecersiz_saat_422(self, client):
-        r = client.post("/scheduler/update?hour=25&minute=0")
-        assert r.status_code == 422
-
-    def test_update_gecersiz_dakika_422(self, client):
-        r = client.post("/scheduler/update?hour=18&minute=60")
-        assert r.status_code == 422

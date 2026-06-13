@@ -100,7 +100,7 @@ Pozisyon büyüklüğü: `risk_per_trade (1%) / stop_loss_pct (3%) ≈ %33 serma
 
 `app/scheduler.py` — `AsyncIOScheduler`, her gün 4 kez TR saati (`Europe/Istanbul`):
 10:30 · 12:30 · 15:30 · 18:10 (Pazartesi–Cuma)
-Her tarama `scan_bist100()` çağırır, Telegram'a `format_bist100_signals()` + `format_bist100_scan_report()` gönderir.
+Her tarama `scan_bist100()` çağırır, tüm sinyal tiplerini tek mesajda `format_bist100_full_report()` ile Telegram'a gönderir.
 Lifespan'da başlar/durur. Test ortamında `conftest.py`'deki session-scope mock ile devre dışı bırakılır.
 
 ## Test Mimarisi

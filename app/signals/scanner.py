@@ -28,6 +28,26 @@ from datetime import datetime, timedelta
 from threading import Lock
 from typing import Optional
 
+
+class _EWDiag:
+    """Tarama boyunca EARLY_WATCH koşul başarısızlıklarını sayar."""
+
+    def __init__(self):
+        self._lock   = Lock()
+        self._counts: dict[str, int] = {}
+
+    def record(self, ew_flags: dict):
+        with self._lock:
+            for flag, met in ew_flags.items():
+                if not met:
+                    self._counts[flag] = self._counts.get(flag, 0) + 1
+
+    def top_failures(self, n: int = 5) -> list[tuple[str, int]]:
+        return sorted(self._counts.items(), key=lambda x: -x[1])[:n]
+
+    def has_data(self) -> bool:
+        return bool(self._counts)
+
 import time as _time
 
 import pandas as pd
@@ -127,6 +147,10 @@ class ScanResult:
     distance_to_res_pct:  Optional[float]
     strength_score:       int = 0
     score_reasons:        list = field(default_factory=list)
+    rsi_14:               Optional[float] = None
+    volume_ratio:         Optional[float] = None
+    daily_change_pct:     Optional[float] = None
+    close_to_ema20_pct:   Optional[float] = None
     scanned_at:           str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def to_dict(self) -> dict:
@@ -249,10 +273,19 @@ def _watch_reason(details: dict, dist_pct: Optional[float]) -> str:
 
 # ── Sinyal işleme çekirdeği ───────────────────────────────────────────────────
 
+def _ema20_pct(details: dict) -> Optional[float]:
+    close = details.get("close", 0.0)
+    ema20 = details.get("ema_20", 0.0)
+    if close and ema20:
+        return round((close / ema20 - 1) * 100, 2)
+    return None
+
+
 def _process_df(
     symbol: str,
     df: pd.DataFrame,
     mf: MarketFilterResult,
+    ew_diag: Optional[_EWDiag] = None,
 ) -> Optional[ScanResult]:
     """
     İndikatörlü DataFrame'den sinyal üretir ve ScanResult döner.
@@ -277,6 +310,10 @@ def _process_df(
             stop_loss=tb["stop_loss"], take_profit=tb["take_profit"],
             market_filter=mf.status, conditions_met=5, distance_to_res_pct=0.0,
             strength_score=score, score_reasons=reasons,
+            rsi_14=details.get("rsi_14"),
+            volume_ratio=details.get("volume_ratio"),
+            daily_change_pct=details.get("daily_change_pct"),
+            close_to_ema20_pct=_ema20_pct(details),
         )
 
     # ── LATE_BREAKOUT ─────────────────────────────────────────────────────────
@@ -290,15 +327,19 @@ def _process_df(
             stop_loss=tb["stop_loss"], take_profit=tb["take_profit"],
             market_filter=mf.status, conditions_met=5, distance_to_res_pct=0.0,
             strength_score=score, score_reasons=reasons,
+            rsi_14=details.get("rsi_14"),
+            volume_ratio=details.get("volume_ratio"),
+            daily_change_pct=details.get("daily_change_pct"),
+            close_to_ema20_pct=_ema20_pct(details),
         )
 
     # ── HOLD → önce pre_breakout_squeeze dene ────────────────────────────────
     if signal_type == "HOLD":
-        pbs = pbs_generate(df)
-        pbs_signal = pbs["signal"]
+        pbs         = pbs_generate(df)
+        pbs_signal  = pbs["signal"]
+        pbs_details = pbs.get("details", {})
 
         if pbs_signal in ("EARLY_WATCH", "SETUP"):
-            pbs_details = pbs.get("details", {})
             pbs_score, pbs_reasons = _pbs_strength_score(pbs_details)
             dist_pct = pbs_details.get("distance_to_res_pct", None)
             mf_note = ""
@@ -321,7 +362,17 @@ def _process_df(
                 distance_to_res_pct=dist_pct,
                 strength_score=pbs_score,
                 score_reasons=pbs_reasons,
+                rsi_14=pbs_details.get("rsi_14"),
+                volume_ratio=pbs_details.get("volume_ratio"),
+                daily_change_pct=pbs_details.get("daily_change_pct"),
+                close_to_ema20_pct=pbs_details.get("close_to_ema20_pct"),
             )
+
+        # pbs HOLD — EW koşul başarısızlıklarını kaydet
+        if ew_diag is not None:
+            ew_flags = pbs_details.get("ew_flags", {})
+            if ew_flags:
+                ew_diag.record(ew_flags)
 
         # Geriye dönük WATCH mantığı
         is_watch, n_met, dist_pct = _assess_watch(details)
@@ -341,6 +392,10 @@ def _process_df(
             strategy="trend_breakout", stop_loss=None, take_profit=None,
             market_filter=mf.status, conditions_met=n_met,
             distance_to_res_pct=dist_pct, strength_score=score, score_reasons=reasons,
+            rsi_14=details.get("rsi_14"),
+            volume_ratio=details.get("volume_ratio"),
+            daily_change_pct=details.get("daily_change_pct"),
+            close_to_ema20_pct=_ema20_pct(details),
         )
 
     return None  # SELL → ilgi yok
@@ -376,6 +431,7 @@ def _scan_symbol_cached(
     mf: MarketFilterResult,
     period: str,
     min_tl_volume: float,
+    ew_diag: Optional[_EWDiag] = None,
 ) -> tuple[Optional[ScanResult], bool]:
     hit, cached = _cache_get(symbol)
     if hit:
@@ -396,7 +452,7 @@ def _scan_symbol_cached(
         _cache_set(symbol, None)
         return None, False
 
-    result = _process_df(symbol, df, mf)
+    result = _process_df(symbol, df, mf, ew_diag)
     _cache_set(symbol, result)
     return result, False
 
@@ -444,10 +500,11 @@ def _scan_parallel(
 
     all_results:   list[ScanResult] = []
     error_symbols: list[str]        = []
+    ew_diag = _EWDiag()
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
-            pool.submit(_scan_symbol_cached, sym, mf, period, min_tl_volume): sym
+            pool.submit(_scan_symbol_cached, sym, mf, period, min_tl_volume, ew_diag): sym
             for sym in symbols
         }
         for future in as_completed(futures):
@@ -494,6 +551,26 @@ def _scan_parallel(
     if error_symbols:
         logger.warning(f"[{label}] Veri alınamayan semboller ({len(error_symbols)}): {error_symbols}")
 
+    # ── İlk 15 sinyal tablosu ──────────────────────────────────────────────────
+    if all_results:
+        _log_top15(label, all_results)
+
+    # ── SETUP > 20 guard ──────────────────────────────────────────────────────
+    setup_count = signal_counts.get("SETUP", 0)
+    if setup_count > 20:
+        logger.warning(
+            f"[{label}] SETUP sayısı yüksek ({setup_count}) — "
+            "filtreler değiştirilmedi, yalnızca raporlanıyor."
+        )
+
+    # ── EARLY_WATCH = 0 tanısı ────────────────────────────────────────────────
+    if signal_counts.get("EARLY_WATCH", 0) == 0 and ew_diag.has_data():
+        top = ew_diag.top_failures(7)
+        fail_summary = " | ".join(f"{flag}={cnt}" for flag, cnt in top)
+        logger.warning(
+            f"[{label}] EARLY_WATCH=0 — en çok elenen koşullar: {fail_summary}"
+        )
+
     return {
         "label":               label,
         "results":             [r.to_dict() for r in all_results],
@@ -508,6 +585,27 @@ def _scan_parallel(
         "elapsed_seconds":     round(elapsed, 1),
         "market_filter":       mf.status,
     }
+
+
+def _log_top15(label: str, results: list[ScanResult]) -> None:
+    header = (
+        f"{'Sembol':<10} {'Sinyal':<12} {'Skor':>4} {'Fiyat':>9} "
+        f"{'RSI':>5} {'HacimR':>6} {'Mes%':>6} {'Gün%':>6} {'EMA20%':>7}"
+    )
+    rows = []
+    for r in results[:15]:
+        rows.append(
+            f"{r.symbol:<10} {r.signal:<12} {r.strength_score:>4} "
+            f"{r.price:>9.2f} "
+            f"{r.rsi_14 or 0:>5.1f} {r.volume_ratio or 0:>6.2f} "
+            f"{r.distance_to_res_pct or 0:>6.1f} "
+            f"{r.daily_change_pct or 0:>6.1f} "
+            f"{r.close_to_ema20_pct or 0:>7.1f}"
+        )
+    logger.info(
+        f"[{label}] İlk {min(15, len(results))} sinyal "
+        f"(toplam {len(results)}):\n{header}\n" + "\n".join(rows)
+    )
 
 
 def _empty_report(label: str) -> dict:
