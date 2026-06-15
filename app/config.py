@@ -34,6 +34,18 @@ class Settings(BaseSettings):
     take_profit_pct: float = 0.10
     max_open_signals: int = 5
 
+    # Fiyat önbelleği (SQLite) — paralel taramada yfinance yükünü azaltır
+    price_cache_enabled: bool = True
+
+    # Sinyal takibi
+    signal_expiry_days: int = 10       # bu süre sonunda açık sinyal EXPIRED olur
+    performance_window_days: int = 30  # isabet raporu pencere genişliği
+
+    # Tarama akışı risk kalite kapısı — min risk/ödül oranı (R/R)
+    # Zamanlanmış tarama risk/manager.py'den geçmediği için bu eşik scanner'da
+    # uygulanır; altında kalan BUY/LATE sinyalleri yayınlanmaz.
+    min_risk_reward: float = 1.5
+
     model_config = SettingsConfigDict(
         # Mutlak yol — uvicorn hangi dizinden çalıştırılırsa çalıştırılsın .env bulunur
         env_file=str(_ENV_FILE),

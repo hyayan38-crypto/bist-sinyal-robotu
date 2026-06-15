@@ -115,7 +115,6 @@ Lifespan'da başlar/durur. Test ortamında `conftest.py`'deki session-scope mock
 - **Gerçek emir yok.** Sistem yalnızca sinyal üretir.
 - `.env` dosyasındaki `TELEGRAM_BOT_TOKEN` ve `TELEGRAM_CHAT_ID` eksikse bildirimler sessizce atlanır, hata fırlatılmaz.
 - `DEFAULT_SYMBOLS` `.env`'de artık kullanılmaz; `app/data/symbols.py`'deki `SymbolRegistry` (singleton `registry`) çalışma zamanında yönetilir.
-- `app/backtest/engine.py` eski EMA crossover motoru — aktif kullanımda değil, `runner.py` kullanılır.
 
 ## Dosya Konumları
 

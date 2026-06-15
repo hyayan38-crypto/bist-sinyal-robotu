@@ -456,6 +456,23 @@ def format_daily_summary(signals: list[dict]) -> str:
     )
 
 
+def format_performance_summary(summary: dict) -> str:
+    """Sinyal isabet raporunu (TP/SL/süre dolumu) Telegram için formatlar."""
+    win = summary.get("win_rate")
+    win_line = f"🎯 İsabet: `%{win}`" if win is not None else "🎯 İsabet: `—` (kapanan sinyal yok)"
+    return (
+        f"📊 *Sinyal Performansı — son {summary['window_days']} gün*\n"
+        f"{'─' * 22}\n"
+        f"Toplam üretilen: `{summary['total']}`\n"
+        f"✅ Hedefe ulaşan (TP): `{summary['hit_tp']}`\n"
+        f"🛑 Stop olan (SL): `{summary['hit_sl']}`\n"
+        f"⏳ Süre dolan: `{summary['expired']}`\n"
+        f"🔵 Hâlâ açık: `{summary['active']}`\n"
+        f"{'─' * 22}\n"
+        f"{win_line}"
+    )
+
+
 # ── Üst düzey yardımcı gönderici ─────────────────────────────────────────────
 
 async def notify_signal(result: dict) -> bool:

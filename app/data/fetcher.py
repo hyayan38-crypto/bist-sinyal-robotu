@@ -214,6 +214,62 @@ def fetch_symbol_data(
     return result
 
 
+def fetch_symbol_data_cached(
+    symbol: str,
+    period: str = "2y",
+    interval: str = "1d",
+    min_rows: int = _MIN_ROWS,
+) -> FetchResult:
+    """
+    `fetch_symbol_data`'nın SQLite önbellekli sürümü.
+
+    Strateji:
+      • Önbellek yoksa / yetersizse / bugün henüz tam indirme yapılmadıysa
+        → tam indir, önbelleği baştan yaz (temettü/bölünme düzeltmeleri dahil).
+      • Aynı gün tekrar çağrılırsa → yalnızca son birkaç barı çek, son barı
+        güncelle ve birleşik seriyi döndür (yfinance yükü ~250 bar → ~5 bar).
+
+    Tüm önbellek işlemleri fail-open: hata olursa doğrudan canlı çekime düşer.
+    `settings.price_cache_enabled=False` ise düz `fetch_symbol_data` çalışır.
+    """
+    if not settings.price_cache_enabled:
+        return fetch_symbol_data(symbol, period=period, interval=interval, min_rows=min_rows)
+
+    from app.data import price_cache
+
+    norm = _normalize_symbol(symbol)
+    cached = price_cache.load(norm, interval)
+    today = datetime.now().date()
+
+    need_full = (
+        cached is None
+        or len(cached.df) < min_rows
+        or cached.last_fetch_date < today
+    )
+
+    if need_full:
+        result = fetch_symbol_data(symbol, period=period, interval=interval, min_rows=min_rows)
+        price_cache.replace(norm, interval, result.df, fetched_at=result.fetched_at)
+        return result
+
+    # Aynı gün — yalnızca son barları tazele
+    try:
+        recent = fetch_symbol_data(symbol, period="5d", interval=interval, min_rows=1)
+        price_cache.upsert(norm, interval, recent.df, fetched_at=recent.fetched_at)
+    except FetchError as exc:
+        logger.debug(f"{norm}: artımlı tazeleme atlandı ({exc}), önbellekten dönülüyor")
+
+    merged = price_cache.load(norm, interval)
+    if merged is None or len(merged.df) < min_rows:
+        # Önbellek beklenmedik şekilde boşaldı → güvenli tarafa geç
+        return fetch_symbol_data(symbol, period=period, interval=interval, min_rows=min_rows)
+
+    return FetchResult(
+        symbol=norm, df=merged.df, period=period, interval=interval,
+        from_cache=True, source="sqlite",
+    )
+
+
 def fetch_multiple_symbols(
     symbols: list[str],
     period: str = "2y",

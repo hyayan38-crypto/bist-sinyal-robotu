@@ -12,6 +12,7 @@ Pozisyon büyüklüğü kuralı:
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 from dataclasses import dataclass, field, asdict
@@ -260,6 +261,7 @@ def run_single(
     end: Optional[str] = None,
     cash: float = _INITIAL_CASH,
     commission: float = _COMMISSION,
+    params: Optional[dict] = None,
 ) -> BacktestResult:
     """
     Tek sembol için trend_breakout backtesti çalıştırır.
@@ -270,6 +272,9 @@ def run_single(
         start/end:  Tarih aralığı — period yerine geçer ('2022-01-01')
         cash:       Başlangıç sermayesi (TL)
         commission: Komisyon oranı (0.001 = %0.1)
+        params:     TrendBreakoutBT parametre eşlemesi (ör. {"volume_mult": 2.0});
+                    optimizasyon/walk-forward için strateji eşiklerini geçici
+                    olarak değiştirir.
 
     Returns:
         BacktestResult — to_dict() / to_json() ile JSON alınabilir.
@@ -298,7 +303,7 @@ def run_single(
             exclusive_orders=True,
             trade_on_close=False,
         )
-        stats = bt.run()
+        stats = bt.run(**(params or {}))
     except Exception as exc:
         logger.error(f"{symbol} backtest hatası: {exc}")
         return _error_result(symbol, str(exc))
@@ -312,6 +317,238 @@ def run_single(
         f"MaxDD: %{result.max_drawdown_pct:.1f}"
     )
     return result
+
+
+# ── Parametre optimizasyonu (grid search + walk-forward) ─────────────────────
+#
+# Amaç: trend_breakout eşiklerini (volume_mult, rsi_low, ATR çarpanları …) sabit
+# bırakmak yerine geçmiş veriyle ayarlamak. Aşırı-uyum (overfitting) riskine
+# karşı walk_forward; her pencerede IN-SAMPLE optimize edip OUT-OF-SAMPLE
+# doğrular — gerçekçi performans tahmini verir.
+
+_DEFAULT_PARAM_GRID: dict[str, list] = {
+    "volume_mult": [1.5, 1.8, 2.2],
+    "rsi_low":     [45, 50, 55],
+    "atr_sl_mult": [1.0, 1.5, 2.0],
+    "atr_tp_mult": [2.0, 3.0, 4.0],
+}
+
+_OPTIMIZABLE = {
+    "ema_fast", "ema_slow", "rsi_period", "atr_period", "volume_period",
+    "resistance_period", "rsi_low", "rsi_high", "volume_mult",
+    "stop_loss_pct", "take_profit_pct", "atr_sl_mult", "atr_tp_mult",
+}
+
+_VALID_METRICS = {
+    "sharpe_ratio", "total_return_pct", "win_rate_pct", "profit_factor",
+}
+
+
+def _combo_metrics(stats) -> dict:
+    """bt.run() istatistiklerinden optimizasyon için sade metrik sözlüğü."""
+    def s(key: str, default=0.0):
+        val = stats.get(key, default)
+        if val is None or (isinstance(val, float) and math.isnan(val)):
+            return default
+        return val
+    return {
+        "total_return_pct": round(float(s("Return [%]")), 2),
+        "sharpe_ratio":     round(float(s("Sharpe Ratio")), 3),
+        "win_rate_pct":     round(float(s("Win Rate [%]")), 2),
+        "profit_factor":    round(float(s("Profit Factor")), 3),
+        "max_drawdown_pct": round(float(s("Max. Drawdown [%]")), 2),
+        "total_trades":     int(s("# Trades", 0)),
+    }
+
+
+def _validate_grid(param_grid: Optional[dict]) -> dict:
+    grid = param_grid or _DEFAULT_PARAM_GRID
+    bad = set(grid) - _OPTIMIZABLE
+    if bad:
+        raise ValueError(f"Optimize edilemeyen parametre(ler): {sorted(bad)}")
+    return grid
+
+
+def _grid_on_df(
+    bt_df: pd.DataFrame,
+    grid: dict,
+    metric: str,
+    min_trades: int,
+    cash: float,
+    commission: float,
+) -> list[dict]:
+    """Hazırlanmış bir bt_df üzerinde tüm parametre kombinasyonlarını dener."""
+    bt = Backtest(
+        bt_df, TrendBreakoutBT, cash=cash, commission=commission,
+        exclusive_orders=True, trade_on_close=False,
+    )
+    keys = list(grid.keys())
+    ranked: list[dict] = []
+
+    for combo in itertools.product(*grid.values()):
+        params = dict(zip(keys, combo))
+        try:
+            stats = bt.run(**params)
+        except Exception as exc:  # noqa: BLE001 — geçersiz kombinasyonu atla
+            logger.debug(f"Kombinasyon atlandı {params}: {exc}")
+            continue
+        m = _combo_metrics(stats)
+        if m["total_trades"] < min_trades:
+            continue
+        ranked.append({"params": params, **m})
+
+    ranked.sort(key=lambda x: x[metric], reverse=True)
+    return ranked
+
+
+def grid_search(
+    symbol: str,
+    param_grid: Optional[dict] = None,
+    period: str = "2y",
+    metric: str = "sharpe_ratio",
+    min_trades: int = 5,
+    top_n: int = 10,
+    cash: float = _INITIAL_CASH,
+    commission: float = _COMMISSION,
+) -> dict:
+    """
+    Tek sembol üzerinde parametre ızgarası tarar ve `metric`'e göre en iyi
+    kombinasyonları döner.
+
+    UYARI: Tüm veri üzerinde optimizasyon aşırı-uyuma açıktır; gerçekçi tahmin
+    için `walk_forward` kullanın. Bu fonksiyon hızlı keşif içindir.
+    """
+    if metric not in _VALID_METRICS:
+        raise ValueError(f"Geçersiz metrik '{metric}', seçenekler: {sorted(_VALID_METRICS)}")
+    grid = _validate_grid(param_grid)
+
+    try:
+        fetch_result = fetch_symbol_data(symbol, period=period, interval="1d")
+    except FetchError as exc:
+        logger.error(str(exc))
+        return {"symbol": symbol, "error": str(exc), "results": []}
+
+    bt_df = _to_bt_df(fetch_result.df)
+    if len(bt_df) < 80:
+        return {"symbol": fetch_result.symbol, "error": f"Yetersiz veri: {len(bt_df)} bar", "results": []}
+
+    ranked = _grid_on_df(bt_df, grid, metric, min_trades, cash, commission)
+    combos = 1
+    for v in grid.values():
+        combos *= len(v)
+
+    logger.info(
+        f"Grid search {fetch_result.symbol} | {combos} kombinasyon | "
+        f"{len(ranked)} geçerli (≥{min_trades} işlem) | en iyi {metric}: "
+        f"{ranked[0][metric] if ranked else '—'}"
+    )
+    return {
+        "symbol":       fetch_result.symbol,
+        "period":       period,
+        "metric":       metric,
+        "grid":         grid,
+        "combinations": combos,
+        "valid_count":  len(ranked),
+        "best":         ranked[0] if ranked else None,
+        "results":      ranked[:top_n],
+    }
+
+
+def walk_forward(
+    symbol: str,
+    param_grid: Optional[dict] = None,
+    period: str = "5y",
+    n_splits: int = 4,
+    metric: str = "sharpe_ratio",
+    min_trades: int = 3,
+    cash: float = _INITIAL_CASH,
+    commission: float = _COMMISSION,
+) -> dict:
+    """
+    Walk-forward doğrulama: veriyi `n_splits + 1` kronolojik dilime böler;
+    her adımda bir dilimde (in-sample) en iyi parametreleri grid ile bulur,
+    SONRAKİ dilimde (out-of-sample) bu parametrelerle test eder.
+
+    Out-of-sample ortalamaları, sabit/optimize parametrelerin görülmemiş veride
+    nasıl davrandığını gösterir — aşırı-uyumu açığa çıkarır.
+    """
+    if metric not in _VALID_METRICS:
+        raise ValueError(f"Geçersiz metrik '{metric}', seçenekler: {sorted(_VALID_METRICS)}")
+    grid = _validate_grid(param_grid)
+
+    try:
+        fetch_result = fetch_symbol_data(symbol, period=period, interval="1d")
+    except FetchError as exc:
+        logger.error(str(exc))
+        return {"symbol": symbol, "error": str(exc), "folds": []}
+
+    bt_df = _to_bt_df(fetch_result.df)
+    n_folds = n_splits + 1
+    fold_size = len(bt_df) // n_folds
+    if fold_size < 80:
+        return {
+            "symbol": fetch_result.symbol,
+            "error": f"Walk-forward için yetersiz veri: dilim başına {fold_size} bar (<80)",
+            "folds": [],
+        }
+
+    folds: list[dict] = []
+    oos_returns: list[float] = []
+    oos_sharpes: list[float] = []
+
+    for i in range(n_splits):
+        is_df  = bt_df.iloc[i * fold_size:(i + 1) * fold_size]
+        oos_df = bt_df.iloc[(i + 1) * fold_size:(i + 2) * fold_size]
+
+        ranked = _grid_on_df(is_df, grid, metric, min_trades, cash, commission)
+        if not ranked:
+            folds.append({"fold": i + 1, "skipped": "in-sample geçerli kombinasyon yok"})
+            continue
+
+        best_params = ranked[0]["params"]
+        try:
+            oos_bt = Backtest(
+                oos_df, TrendBreakoutBT, cash=cash, commission=commission,
+                exclusive_orders=True, trade_on_close=False,
+            )
+            oos_stats = oos_bt.run(**best_params)
+            oos_m = _combo_metrics(oos_stats)
+        except Exception as exc:  # noqa: BLE001
+            folds.append({"fold": i + 1, "skipped": f"OOS hata: {exc}"})
+            continue
+
+        oos_returns.append(oos_m["total_return_pct"])
+        oos_sharpes.append(oos_m["sharpe_ratio"])
+        folds.append({
+            "fold":             i + 1,
+            "train_bars":       len(is_df),
+            "test_bars":        len(oos_df),
+            "best_params":      best_params,
+            "in_sample_metric": ranked[0][metric],
+            "out_of_sample":    oos_m,
+        })
+
+    valid = [f for f in folds if "out_of_sample" in f]
+    summary = {
+        "evaluated_folds":   len(valid),
+        "avg_oos_return_pct": round(sum(oos_returns) / len(oos_returns), 2) if oos_returns else 0.0,
+        "avg_oos_sharpe":     round(sum(oos_sharpes) / len(oos_sharpes), 3) if oos_sharpes else 0.0,
+        "oos_positive_rate":  round(sum(1 for r in oos_returns if r > 0) / len(oos_returns) * 100, 1) if oos_returns else 0.0,
+    }
+    logger.info(
+        f"Walk-forward {fetch_result.symbol} | {len(valid)}/{n_splits} dilim | "
+        f"OOS ort. getiri: %{summary['avg_oos_return_pct']:+.1f} | "
+        f"OOS pozitif oranı: %{summary['oos_positive_rate']}"
+    )
+    return {
+        "symbol":   fetch_result.symbol,
+        "period":   period,
+        "metric":   metric,
+        "n_splits": n_splits,
+        "grid":     grid,
+        "summary":  summary,
+        "folds":    folds,
+    }
 
 
 # ── Çoklu hisse backtest ──────────────────────────────────────────────────────
