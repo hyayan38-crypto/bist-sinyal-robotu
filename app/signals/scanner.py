@@ -54,6 +54,7 @@ import time as _time
 import pandas as pd
 from loguru import logger
 
+from app.config import settings
 from app.data.fetcher import fetch_symbol_data, fetch_symbol_data_cached, FetchError
 from app.indicators.technical import add_indicators
 from app.risk.market_filter import (
@@ -240,6 +241,31 @@ def _ema20_pct(details: dict) -> Optional[float]:
     return None
 
 
+def _risk_reward(price: float, stop_loss: Optional[float], take_profit: Optional[float]) -> Optional[float]:
+    """Long sinyal için R/R = (hedef − giriş) / (giriş − stop). Hesaplanamazsa None."""
+    if not price or stop_loss is None or take_profit is None:
+        return None
+    risk = price - stop_loss
+    reward = take_profit - price
+    if risk <= 0:
+        return None
+    return round(reward / risk, 2)
+
+
+def _rr_gate_ok(symbol: str, signal: str, price: float,
+                stop_loss: Optional[float], take_profit: Optional[float]) -> bool:
+    """
+    Risk/ödül kalite kapısı. Zamanlanmış tarama risk/manager.py'den geçmediği
+    için min R/R kuralı burada uygulanır (CLAUDE.md risk katmanı ile tutarlı).
+    R/R hesaplanamazsa fail-open (engellemez).
+    """
+    rr = _risk_reward(price, stop_loss, take_profit)
+    if rr is not None and rr < settings.min_risk_reward:
+        logger.info(f"[BLOCKED] {symbol} {signal} — R/R {rr} < {settings.min_risk_reward}")
+        return False
+    return True
+
+
 def _process_df(
     symbol: str,
     df: pd.DataFrame,
@@ -263,6 +289,8 @@ def _process_df(
         if mf.blocks_buy:
             logger.info(f"[BLOCKED] {symbol} BUY — endeks filtresi: {mf.status}")
             return None
+        if not _rr_gate_ok(symbol, "BUY", price, tb["stop_loss"], tb["take_profit"]):
+            return None
         return ScanResult(
             symbol=symbol, signal="BUY", price=price, reason=tb["reason"],
             risk_level=risk_level, strength=strength, strategy="trend_breakout",
@@ -279,6 +307,8 @@ def _process_df(
     if signal_type == "LATE_BREAKOUT":
         if mf.blocks_buy:
             logger.info(f"[BLOCKED] {symbol} LATE_BREAKOUT — endeks filtresi: {mf.status}")
+            return None
+        if not _rr_gate_ok(symbol, "LATE_BREAKOUT", price, tb["stop_loss"], tb["take_profit"]):
             return None
         return ScanResult(
             symbol=symbol, signal="LATE_BREAKOUT", price=price, reason=tb["reason"],

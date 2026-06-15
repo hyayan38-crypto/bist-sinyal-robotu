@@ -47,6 +47,10 @@ _SCAN_TIMES = [
 
 _TOP_SIGNALS = 5   # Telegram'a gönderilecek maksimum sinyal sayısı
 
+# Tarama sırasında veri alınamayan sembol oranı bu eşiği aşarsa Telegram'a
+# sağlık uyarısı gönderilir (robot sessizce "ölü" kalmasın).
+_ERROR_ALERT_RATIO = 0.30
+
 
 # ── Tarama görevi ─────────────────────────────────────────────────────────────
 
@@ -93,6 +97,19 @@ async def run_bist100_scan(force_market_refresh: bool = False) -> dict:
 
     # Tüm sinyal tiplerini tek mesajda gönder
     await _send(format_bist100_full_report(report))
+
+    # ── Sağlık uyarısı: veri alınamayan sembol oranı yüksekse haber ver ───────
+    scanned     = report.get("scanned", 0)
+    error_count = report.get("error_count", 0)
+    if scanned > 0 and error_count / scanned >= _ERROR_ALERT_RATIO:
+        pct = error_count / scanned * 100
+        logger.warning(f"Yüksek tarama hata oranı: {error_count}/{scanned} (%{pct:.0f})")
+        await _send(
+            f"⚠️ *Tarama Sağlık Uyarısı*\n"
+            f"{'─' * 22}\n"
+            f"Veri alınamayan sembol: `{error_count}/{scanned}` (%{pct:.0f})\n"
+            f"Sinyaller eksik olabilir — veri kaynağı (yfinance) sorunlu olabilir."
+        )
 
     return report
 

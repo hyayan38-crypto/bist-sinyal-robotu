@@ -347,3 +347,36 @@ class TestScanMarket:
         if len(buy_results) >= 2:
             strengths = [r["strength"] for r in buy_results]
             assert strengths == sorted(strengths, reverse=True)
+
+
+# ── R/R kalite kapısı (#7) ────────────────────────────────────────────────────
+
+class TestRiskRewardGate:
+    """Zamanlanmış tarama risk/manager.py'den geçmez; R/R kuralı scanner'da."""
+
+    def _buy(self, sl, tp):
+        return {
+            "signal": "BUY", "price": 100.0, "reason": "test",
+            "risk_level": "LOW", "strength": 0.8,
+            "stop_loss": sl, "take_profit": tp, "details": {},
+        }
+
+    def test_dusuk_rr_engellenir(self):
+        import app.signals.scanner as scanner_mod
+        # R/R = (102-100)/(100-98) = 1.0 < 1.5 → engellenir
+        bad = self._buy(sl=98.0, tp=102.0)
+        with _patch_fetch(_make_fetch_result()):
+            with _patch_mf(_favorable()):
+                with patch.object(scanner_mod, "tb_generate", return_value=bad):
+                    results = scan_market(["THYAO"])
+        assert all(r["signal"] != "BUY" for r in results)
+
+    def test_yeterli_rr_gecer(self):
+        import app.signals.scanner as scanner_mod
+        # R/R = (106-100)/(100-97) = 2.0 ≥ 1.5 → geçer
+        good = self._buy(sl=97.0, tp=106.0)
+        with _patch_fetch(_make_fetch_result()):
+            with _patch_mf(_favorable()):
+                with patch.object(scanner_mod, "tb_generate", return_value=good):
+                    results = scan_market(["THYAO"])
+        assert any(r["signal"] == "BUY" for r in results)

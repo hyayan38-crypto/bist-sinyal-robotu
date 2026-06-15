@@ -245,3 +245,32 @@ class TestSchedulerAPI:
             body = client.post("/scheduler/run-now").json()
         assert "message" in body
         assert "symbols" in body
+
+
+# ── Tarama sağlık uyarısı (#5) ────────────────────────────────────────────────
+
+class TestScanHealthAlert:
+    @pytest.mark.asyncio
+    async def test_yuksek_hata_oraninda_uyari_gonderilir(self):
+        from app.scheduler import run_bist100_scan
+        # 100 sembolden 40'ı hatalı → %40 ≥ %30 eşik → rapor + uyarı = 2 mesaj
+        report = _mock_report(buy=1, early_watch=0)
+        report["scanned"] = 100
+        report["error_count"] = 40
+        with patch("app.scheduler.scan_bist100", return_value=report):
+            with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
+                await run_bist100_scan()
+        assert mock_send.call_count == 2
+        alert = mock_send.call_args_list[-1].args[0]
+        assert "Sağlık Uyarısı" in alert
+
+    @pytest.mark.asyncio
+    async def test_dusuk_hata_oraninda_uyari_yok(self):
+        from app.scheduler import run_bist100_scan
+        report = _mock_report(buy=1, early_watch=0)
+        report["scanned"] = 100
+        report["error_count"] = 5   # %5 < %30 → yalnızca rapor
+        with patch("app.scheduler.scan_bist100", return_value=report):
+            with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
+                await run_bist100_scan()
+        assert mock_send.call_count == 1
