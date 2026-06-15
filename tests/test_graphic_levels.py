@@ -68,6 +68,21 @@ class TestLevelsBlock:
                            "stop_loss", "struct_stop_loss", "ai_stop_loss") == 1
 
 
+class TestEarlyWatchMessageWithLevels:
+    def test_early_watch_shows_struct_levels(self):
+        result = {
+            "signal": "EARLY_WATCH", "symbol": "EREGL.IS", "price": 40.0,
+            "reason": "Kırılıma yakın", "risk_level": "LOW", "strength": 0.6,
+            "stop_loss": 38.0, "take_profit": 44.0,
+            "struct_stop_loss": 38.5, "struct_take_profit": 43.2,
+            "distance_to_res_pct": 2.5,
+        }
+        msg = format_signal_message(result)
+        # Yapı seviyeleri tercih edilir; ATR (38.00/44.00) görünmez.
+        assert "`38.50 TL`" in msg and "`43.20 TL`" in msg
+        assert "38.00" not in msg and "44.00" not in msg
+
+
 class TestBuyMessageWithLevels:
     def test_buy_message_shows_only_ai(self):
         result = {

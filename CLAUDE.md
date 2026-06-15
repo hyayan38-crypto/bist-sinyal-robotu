@@ -92,8 +92,8 @@ Yeni strateji eklemek için:
 
 ### Grafik-Bazlı Stop/Hedef Seviyeleri (ATR'ye ek)
 
-BUY/LATE sinyallerinde ATR seviyelerinin (`trend_breakout._atr_sl_tp`) yanına iki
-**fail-open** katman eklenir; `scanner._graphic_levels()` çağırır:
+Her üç sinyal tipinde (EARLY_WATCH / BUY / LATE_BREAKOUT) ATR seviyelerinin
+yanına iki **fail-open** katman eklenir; `scanner._graphic_levels()` çağırır:
 
 1. **`app/indicators/structure.py`** — swing dip/tepe + `resistance_20` bazlı
    stop/hedef (`structure_sl_tp`). Deterministik, hep çalışır; yapı yoksa `None`.
