@@ -103,9 +103,7 @@ def format_signal_message(result: dict) -> str:
     Tek bir scan sonucunu Telegram mesajına çevirir.
 
     EARLY_WATCH  → 🟠 BIST YAKLAŞIYOR
-    SETUP        → 🟡 BIST HAZIRLIK
     BUY          → 🟢 BIST SİNYALİ
-    WATCH        → 🔵 BIST TAKİP
     LATE_BREAKOUT → 🔴 BIST GEÇ KIRILI
     """
     signal   = result.get("signal", "").upper()
@@ -142,26 +140,6 @@ def format_signal_message(result: dict) -> str:
             f"{_DISCLAIMER}"
         )
 
-    if signal == "SETUP":
-        dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
-        cond_line = f"Koşullar: `{n_met}/6`\n" if n_met is not None else ""
-        return (
-            f"🟡 *BIST HAZIRLIK*\n"
-            f"{'─' * 22}\n"
-            f"Hisse: *{symbol}*\n"
-            f"Sinyal: *SETUP* 🟡\n"
-            f"Fiyat: `{price:.2f} TL`\n"
-            f"Güç: `{strength:.0%}`\n"
-            f"Sebep: {reason}\n"
-            f"{cond_line}"
-            f"{dist_line}"
-            f"{sl_line}"
-            f"{tp_line}"
-            f"🕐 `{ts}`\n"
-            f"{'─' * 22}\n"
-            f"{_DISCLAIMER}"
-        )
-
     if signal == "BUY":
         sl_line2 = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
         tp_line2 = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
@@ -176,24 +154,6 @@ def format_signal_message(result: dict) -> str:
             f"Risk: *{risk}*\n"
             f"{sl_line2}"
             f"{tp_line2}"
-            f"🕐 `{ts}`\n"
-            f"{'─' * 22}\n"
-            f"{_DISCLAIMER}"
-        )
-
-    if signal == "WATCH":
-        cond_line = f"Koşullar: `{n_met}/5`\n" if n_met is not None else ""
-        dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
-        return (
-            f"👀 *BIST TAKİP*\n"
-            f"{'─' * 22}\n"
-            f"Hisse: *{symbol}*\n"
-            f"Sinyal: *WATCH* 🔵\n"
-            f"Fiyat: `{price:.2f} TL`\n"
-            f"Sebep: {reason}\n"
-            f"Risk: *{risk}*\n"
-            f"{cond_line}"
-            f"{dist_line}"
             f"🕐 `{ts}`\n"
             f"{'─' * 22}\n"
             f"{_DISCLAIMER}"
@@ -231,22 +191,19 @@ def format_scan_summary(results: list[dict]) -> str:
     """scan_market() çıktısının tamamı için özet mesaj formatlar."""
     by_type = {
         sig: [r for r in results if r.get("signal") == sig]
-        for sig in ("EARLY_WATCH", "SETUP", "BUY", "WATCH", "LATE_BREAKOUT")
+        for sig in ("EARLY_WATCH", "BUY", "LATE_BREAKOUT")
     }
     ts = datetime.now().strftime("%d.%m.%Y %H:%M")
 
     ew  = len(by_type["EARLY_WATCH"])
-    st  = len(by_type["SETUP"])
     bu  = len(by_type["BUY"])
-    wa  = len(by_type["WATCH"])
     lat = len(by_type["LATE_BREAKOUT"])
 
     lines = [
         f"📊 *BIST Tarama Özeti*",
         f"🕐 `{ts}`",
         f"{'─' * 22}",
-        f"🟠 EARLY WATCH: `{ew}` | 🟡 SETUP: `{st}`",
-        f"🟢 BUY: `{bu}` | 🔵 WATCH: `{wa}` | 🔴 GEÇ: `{lat}`",
+        f"🟠 EARLY WATCH: `{ew}` | 🟢 BUY: `{bu}` | 🔴 GEÇ: `{lat}`",
     ]
 
     if by_type["EARLY_WATCH"]:
@@ -257,27 +214,11 @@ def format_scan_summary(results: list[dict]) -> str:
             dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
             lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
 
-    if by_type["SETUP"]:
-        lines.append("\n*🟡 Hazırlık Aşamasında:*")
-        for r in by_type["SETUP"]:
-            sym  = _strip_is(r["symbol"])
-            dist = r.get("distance_to_res_pct")
-            dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
-            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
-
     if by_type["BUY"]:
         lines.append("\n*🟢 AL Sinyalleri:*")
         for r in by_type["BUY"]:
             sym = _strip_is(r["symbol"])
             lines.append(f"  • *{sym}* — `{r['price']:.2f} TL` güç `{r['strength']:.0%}`")
-
-    if by_type["WATCH"]:
-        lines.append("\n*🔵 Takip Listesi:*")
-        for r in by_type["WATCH"]:
-            sym  = _strip_is(r["symbol"])
-            dist = r.get("distance_to_res_pct")
-            dist_str = f" (%{dist:.1f} uzakta)" if dist and dist > 0 else ""
-            lines.append(f"  • *{sym}* — `{r['price']:.2f} TL`{dist_str}")
 
     if by_type["LATE_BREAKOUT"]:
         lines.append("\n*🔴 Geç Kırılım (dikkat):*")
@@ -332,13 +273,12 @@ def format_bist100_signals(buy_results: list[dict], top_n: int = 5) -> str:
 
 def format_bist100_early_signals(results: list[dict], top_n: int = 3) -> str:
     """
-    BIST100 taramasının EARLY_WATCH + SETUP sinyallerini formatlar.
+    BIST100 taramasının EARLY_WATCH sinyallerini formatlar.
     Kırılım öncesi fırsatlar listesi.
     """
     early_watch = [r for r in results if r.get("signal") == "EARLY_WATCH"]
-    setup       = [r for r in results if r.get("signal") == "SETUP"]
 
-    if not early_watch and not setup:
+    if not early_watch:
         return ""
 
     ts = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -359,15 +299,6 @@ def format_bist100_early_signals(results: list[dict], top_n: int = 3) -> str:
             lines.append(f"  🟠 *{sym}* `{price:.2f} TL`{dist_str}")
             lines.append(f"     _{reason}_")
 
-    if setup:
-        lines.append(f"\n*🟡 Hazırlık Aşamasında ({len(setup)} hisse):*")
-        for r in setup[:top_n]:
-            sym  = _strip_is(r.get("symbol", ""))
-            price = r.get("price", 0.0)
-            dist  = r.get("distance_to_res_pct")
-            dist_str = f" — direncin %{dist:.1f} altında" if dist and dist > 0 else ""
-            lines.append(f"  🟡 *{sym}* `{price:.2f} TL`{dist_str}")
-
     lines.append(f"\n{'─' * 22}")
     lines.append(_DISCLAIMER)
     return "\n".join(lines)
@@ -381,8 +312,6 @@ def format_bist100_scan_report(report: dict) -> str:
     label        = report.get("label", "BIST100")
     scanned      = report.get("scanned", 0)
     buy_count    = report.get("buy_count", 0)
-    watch_count  = report.get("watch_count", 0)
-    setup_count  = report.get("setup_count", 0)
     ew_count     = report.get("early_watch_count", 0)
     late_count   = report.get("late_breakout_count", 0)
     error_count  = report.get("error_count", 0)
@@ -397,8 +326,7 @@ def format_bist100_scan_report(report: dict) -> str:
         f"🕐 `{ts}`",
         f"{'─' * 22}",
         f"🔍 Taranan: `{scanned}` hisse",
-        f"🟠 EARLY: `{ew_count}` | 🟡 SETUP: `{setup_count}`",
-        f"🟢 BUY: `{buy_count}` | 🔵 WATCH: `{watch_count}` | 🔴 GEÇ: `{late_count}`",
+        f"🟠 EARLY: `{ew_count}` | 🟢 BUY: `{buy_count}` | 🔴 GEÇ: `{late_count}`",
         f"❌ Hata: `{error_count}` | ⏱ Süre: `{elapsed:.1f}s`",
         f"{mf_emoji} Endeks: `{mf_status}`",
     ]
@@ -454,14 +382,14 @@ def _format_symbol_row(idx: int, r: dict) -> str:
 def format_bist100_full_report(report: dict, top_n: int = 5) -> str:
     """
     Tüm sinyal tiplerini tek Telegram mesajında birleştirir.
-    Sıra: EARLY_WATCH → SETUP → WATCH → BUY → LATE_BREAKOUT
+    Sıra: EARLY_WATCH → BUY → LATE_BREAKOUT
     Her bölümde en fazla top_n hisse; boş bölümler gösterilmez.
     """
     ts      = datetime.now().strftime("%d.%m.%Y %H:%M")
     label   = report.get("label", "BIST100")
     results = report.get("results", [])
 
-    sig_names = ("EARLY_WATCH", "SETUP", "WATCH", "BUY", "LATE_BREAKOUT")
+    sig_names = ("EARLY_WATCH", "BUY", "LATE_BREAKOUT")
     by_type: dict[str, list[dict]] = {
         sig: sorted(
             [r for r in results if r.get("signal") == sig],
@@ -471,8 +399,6 @@ def format_bist100_full_report(report: dict, top_n: int = 5) -> str:
     }
 
     ew_n = len(by_type["EARLY_WATCH"])
-    st_n = len(by_type["SETUP"])
-    wa_n = len(by_type["WATCH"])
     bu_n = len(by_type["BUY"])
     la_n = len(by_type["LATE_BREAKOUT"])
 
@@ -485,14 +411,12 @@ def format_bist100_full_report(report: dict, top_n: int = 5) -> str:
     lines = [
         f"📊 *{label} Taraması* | `{ts}`",
         f"{'─' * 22}",
-        f"🟠 EARLY: `{ew_n}` | 🟡 SETUP: `{st_n}` | 👀 WATCH: `{wa_n}` | 🟢 BUY: `{bu_n}` | 🔴 LATE: `{la_n}`",
+        f"🟠 EARLY: `{ew_n}` | 🟢 BUY: `{bu_n}` | 🔴 LATE: `{la_n}`",
         f"{'─' * 22}",
     ]
 
     _SECTIONS = [
         ("EARLY_WATCH",   "🟠 EARLY WATCH"),
-        ("SETUP",         "🟡 SETUP"),
-        ("WATCH",         "👀 WATCH"),
         ("BUY",           "🟢 BUY"),
         ("LATE_BREAKOUT", "🔴 LATE BREAKOUT"),
     ]

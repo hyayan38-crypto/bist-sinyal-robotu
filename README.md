@@ -41,7 +41,7 @@ ileten bir araştırma aracıdır.
 **Sistem şunları yapar:**
 - yfinance üzerinden günlük OHLCV verisi çeker
 - EMA, RSI, MACD, ATR, Bollinger Bands gibi indikatörleri hesaplar
-- Trend + hacimli kırılım stratejisiyle AL/WATCH/HOLD sinyali üretir
+- Trend + hacimli kırılım stratejisiyle EARLY_WATCH/BUY/LATE_BREAKOUT sinyali üretir
 - XU100 endeks filtresiyle düşüş trendinde AL sinyallerini engeller
 - Geçmiş veri üzerinde backtest çalıştırır ve performans raporlar
 - Sinyalleri Telegram'a gönderir
@@ -65,7 +65,7 @@ ileten bir araştırma aracıdır.
 | `strategies/ema_crossover.py` | EMA20/50 golden cross + RSI filtresi |
 | `strategies/rsi_bb.py` | RSI aşırı bölge + Bollinger Band dokunuşu |
 | `backtest/runner.py` | backtesting.py motoru, pozisyon büyüklüğü yönetimi, JSON çıktı |
-| `signals/scanner.py` | Tüm piyasayı tarar, BUY ve WATCH sinyallerini listeler |
+| `signals/scanner.py` | Tüm piyasayı tarar, EARLY_WATCH / BUY / LATE_BREAKOUT sinyallerini listeler |
 | `risk/manager.py` | R/R filtresi, pozisyon büyüklüğü, açık sinyal limiti |
 | `risk/market_filter.py` | XU100 Close > EMA50 kontrolü, 1 saatlik önbellek |
 | `notifications/telegram.py` | Mesaj formatlama, retry mantığı, günlük özet |
@@ -130,7 +130,7 @@ Sebep:
 ──────────────────────
 📊 BIST100 Tarama Raporu
 🔍 Taranan: 100 hisse
-🟢 BUY: 3 | 🔵 WATCH: 7
+🟠 EARLY: 5 | 🟢 BUY: 3 | 🔴 GEÇ: 1
 ❌ Hata: 2 | ⏱ Süre: 78.4s
 🟢 Endeks: favorable
 ```
@@ -268,7 +268,7 @@ INFO  | Uvicorn running on http://0.0.0.0:8000
 |--------|-----|----------|
 | `GET` | `/health` | Versiyon, Telegram durumu, sembol sayısı |
 | `GET` | `/symbols` | Aktif izleme listesi |
-| `GET` | `/scan` | Tüm piyasa taraması — BUY + WATCH sinyalleri |
+| `GET` | `/scan` | Tüm piyasa taraması — EARLY_WATCH + BUY + LATE_BREAKOUT sinyalleri |
 | `GET` | `/signal/{symbol}` | Tek hisse anlık sinyal ve indikatörler |
 | `GET` | `/backtest/{symbol}` | Geçmiş performans analizi |
 
@@ -327,7 +327,8 @@ curl "http://localhost:8000/scan"
 {
   "scanned": 15,
   "buy_count": 2,
-  "watch_count": 4,
+  "early_watch_count": 4,
+  "late_breakout_count": 1,
   "results": [
     {
       "symbol": "ASELS.IS",
@@ -584,7 +585,7 @@ bist-sinyal-robotu/
 │   │   └── runner.py         # TrendBreakoutBT, run_single, run_multiple
 │   ├── signals/
 │   │   ├── generator.py      # SignalGenerator (DB kayıt)
-│   │   └── scanner.py        # scan_market() — BUY + WATCH
+│   │   └── scanner.py        # scan_market() — EARLY_WATCH + BUY + LATE_BREAKOUT
 │   ├── risk/
 │   │   ├── manager.py        # RiskManager — R/R, pozisyon büyüklüğü
 │   │   └── market_filter.py  # XU100 endeks filtresi, TTL cache

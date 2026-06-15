@@ -17,7 +17,7 @@ def _make_scheduler() -> BISTScheduler:
     return BISTScheduler()
 
 
-def _mock_results(buy: int = 2, watch: int = 1) -> list[dict]:
+def _mock_results(buy: int = 2, early_watch: int = 1) -> list[dict]:
     results = []
     for i in range(buy):
         results.append({
@@ -26,9 +26,9 @@ def _mock_results(buy: int = 2, watch: int = 1) -> list[dict]:
             "strength_score": 70, "stop_loss": 97.0, "take_profit": 106.0,
             "market_filter": "favorable", "conditions_met": 5, "distance_to_res_pct": 0.0,
         })
-    for i in range(watch):
+    for i in range(early_watch):
         results.append({
-            "signal": "WATCH", "symbol": f"WCH{i}.IS", "price": 80.0 + i,
+            "signal": "EARLY_WATCH", "symbol": f"EWC{i}.IS", "price": 80.0 + i,
             "reason": "test", "risk_level": "LOW", "strength": 0.4,
             "strength_score": 40, "stop_loss": None, "take_profit": None,
             "market_filter": "favorable", "conditions_met": 4, "distance_to_res_pct": 1.5,
@@ -36,17 +36,15 @@ def _mock_results(buy: int = 2, watch: int = 1) -> list[dict]:
     return results
 
 
-def _mock_report(buy: int = 2, watch: int = 1) -> dict:
+def _mock_report(buy: int = 2, early_watch: int = 1) -> dict:
     """scan_bist100'ün döndürdüğü rapor dict'inin test taklidi."""
-    results = _mock_results(buy, watch)
+    results = _mock_results(buy, early_watch)
     return {
         "label": "BIST100",
         "results": results,
         "scanned": len(results),
         "buy_count": buy,
-        "watch_count": watch,
-        "setup_count": 0,
-        "early_watch_count": 0,
+        "early_watch_count": early_watch,
         "late_breakout_count": 0,
         "error_count": 0,
         "error_symbols": [],
@@ -155,7 +153,7 @@ class TestBISTScheduler:
 class TestRunDailyScan:
     @pytest.mark.asyncio
     async def test_sinyal_varsa_mesaj_gonderilir(self):
-        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=2, watch=1)):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=2, early_watch=1)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
                 await run_daily_scan()
         # Tek tam rapor mesajı gönderilir
@@ -163,7 +161,7 @@ class TestRunDailyScan:
 
     @pytest.mark.asyncio
     async def test_sinyal_yoksa_da_rapor_gonderilir(self):
-        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=0, watch=0)):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=0, early_watch=0)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock) as mock_send:
                 await run_daily_scan()
         # Sinyal olmasa da tarama raporu gönderilir
@@ -180,7 +178,7 @@ class TestRunDailyScan:
 
     @pytest.mark.asyncio
     async def test_buy_sayisi_dogru(self):
-        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=3, watch=0)):
+        with patch("app.scheduler.scan_bist100", return_value=_mock_report(buy=3, early_watch=0)):
             with patch("app.scheduler.send_telegram_message", new_callable=AsyncMock):
                 report = await run_daily_scan()
         assert report["buy_count"] == 3

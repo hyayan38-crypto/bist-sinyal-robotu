@@ -142,20 +142,20 @@ class TestScan:
             r = client.get("/scan").json()
         assert "scanned" in r
         assert "buy_count" in r
-        assert "watch_count" in r
+        assert "early_watch_count" in r
         assert "results" in r
 
     def test_buy_count_correct(self, client):
         fake = [
             {"signal": "BUY",   "symbol": "A.IS", "price": 100.0,
              "reason": "", "risk_level": "LOW", "strength": 0.7},
-            {"signal": "WATCH", "symbol": "B.IS", "price": 50.0,
+            {"signal": "EARLY_WATCH", "symbol": "B.IS", "price": 50.0,
              "reason": "", "risk_level": "LOW", "strength": 0.4},
         ]
         with patch("app.main.scan_market", return_value=fake):
             r = client.get("/scan").json()
         assert r["buy_count"] == 1
-        assert r["watch_count"] == 1
+        assert r["early_watch_count"] == 1
 
     def test_include_watch_false_param_forwarded(self, client):
         with patch("app.main.scan_market", return_value=[]) as mock_scan:

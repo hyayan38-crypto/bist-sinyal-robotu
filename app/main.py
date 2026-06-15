@@ -232,15 +232,16 @@ async def upload_symbols_csv(file: UploadFile = File(...), replace: bool = False
 )
 async def market_scan(
     period: str = Query("1y", description="Veri periyodu: 6mo · 1y · 2y"),
-    include_watch: bool = Query(True, description="WATCH sinyallerini dahil et"),
+    include_watch: bool = Query(True, description="Kırılım dışı (EARLY_WATCH/LATE) sinyalleri dahil et"),
     refresh_market: bool = Query(False, description="XU100 önbelleğini yenile"),
     symbols: Optional[List[str]] = Query(None, description="Taranacak semboller (boşsa kayıtlı liste)"),
 ):
     """
-    Tüm sembolleri tarar; **BUY** ve güçlü **WATCH** sinyallerini döner.
+    Tüm sembolleri tarar; **EARLY_WATCH**, **BUY** ve **LATE_BREAKOUT** sinyallerini döner.
 
+    - EARLY_WATCH → Kırılıma yakın, hacim/momentum canlanıyor 🟠
     - BUY  → Tüm kırılım koşulları + endeks filtresi ✅
-    - WATCH → Trend doğru, direnç yakın ama henüz kırılmadı 🔵
+    - LATE_BREAKOUT → Kırılım oldu ama geç kalınma işaretleri var 🔴
     """
     sym_list = symbols or registry.symbols
     results = await asyncio.get_event_loop().run_in_executor(
@@ -253,10 +254,11 @@ async def market_scan(
         ),
     )
     return {
-        "scanned":     len(sym_list),
-        "buy_count":   sum(1 for r in results if r["signal"] == "BUY"),
-        "watch_count": sum(1 for r in results if r["signal"] == "WATCH"),
-        "results":     results,
+        "scanned":             len(sym_list),
+        "buy_count":           sum(1 for r in results if r["signal"] == "BUY"),
+        "early_watch_count":   sum(1 for r in results if r["signal"] == "EARLY_WATCH"),
+        "late_breakout_count": sum(1 for r in results if r["signal"] == "LATE_BREAKOUT"),
+        "results":             results,
     }
 
 
@@ -267,7 +269,7 @@ async def market_scan(
 @app.get("/scan/bist100", summary="BIST100 tam tarama", tags=["Sinyaller"])
 async def scan_bist100_endpoint(
     period: str = Query("1y", description="Veri periyodu: 6mo · 1y · 2y"),
-    include_watch: bool = Query(True, description="WATCH sinyallerini dahil et"),
+    include_watch: bool = Query(True, description="Kırılım dışı (EARLY_WATCH/LATE) sinyalleri dahil et"),
     refresh_market: bool = Query(False, description="XU100 önbelleğini yenile"),
     min_tl_volume: float = Query(50_000_000, description="Minimum günlük TL hacmi"),
 ):
@@ -343,7 +345,7 @@ async def get_signal(
     Tek hisse için anlık sinyal üretir.
 
     Döner:
-    - **signal**: BUY · WATCH · HOLD · SELL
+    - **signal**: BUY · LATE_BREAKOUT · HOLD · SELL
     - **price**, **reason**, **risk_level**, **strength**
     - **stop_loss**, **take_profit** (BUY ise)
     - **conditions**: her koşulun ayrı sonucu

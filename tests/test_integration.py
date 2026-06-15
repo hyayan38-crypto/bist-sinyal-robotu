@@ -668,7 +668,7 @@ class TestAPIHealth:
             r = client.get("/scan").json()
         assert "scanned" in r
         assert "buy_count" in r
-        assert "watch_count" in r
+        assert "early_watch_count" in r
         assert "results" in r
 
     # ── /signal/{symbol} (mock) ───────────────────────────────────────────────

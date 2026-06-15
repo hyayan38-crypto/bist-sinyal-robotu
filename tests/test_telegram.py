@@ -35,9 +35,10 @@ def _buy_result(**kw) -> dict:
 
 
 def _watch_result(**kw) -> dict:
+    # WATCH/SETUP kaldırıldı; izleme aşaması artık tek tip: EARLY_WATCH
     base = {
-        "symbol": "THYAO.IS", "signal": "WATCH", "price": 110.20,
-        "reason": "Trend yukarı | Hacim x2.1 | Dirence %1.8 uzakta",
+        "symbol": "THYAO.IS", "signal": "EARLY_WATCH", "price": 110.20,
+        "reason": "Dirence %1.8 altında | Hacim canlanıyor (x2.1)",
         "risk_level": "LOW", "strength": 0.4,
         "stop_loss": None, "take_profit": None,
         "market_filter": "favorable", "conditions_met": 4, "distance_to_res_pct": 1.8,
@@ -117,23 +118,15 @@ class TestFormatSignalMessage:
         msg = format_signal_message(_buy_result(stop_loss=None))
         assert "Stop Loss" not in msg
 
-    def test_watch_contains_watch_header(self):
-        msg = format_signal_message(_watch_result())
-        assert "TAKİP" in msg
-
-    def test_watch_contains_conditions_met(self):
-        msg = format_signal_message(_watch_result())
-        assert "4/5" in msg
-
-    def test_watch_contains_distance(self):
+    def test_early_watch_distance(self):
         msg = format_signal_message(_watch_result())
         assert "1.8" in msg
 
-    def test_watch_no_stop_loss(self):
+    def test_early_watch_no_stop_loss(self):
         msg = format_signal_message(_watch_result())
         assert "Stop Loss" not in msg
 
-    def test_watch_contains_disclaimer(self):
+    def test_early_watch_contains_disclaimer(self):
         assert _DISCLAIMER in format_signal_message(_watch_result())
 
     def test_unknown_signal_type_no_crash(self):
@@ -276,17 +269,6 @@ class TestSendTelegramMessage:
 
 # ── Yeni sinyal tipleri: format_signal_message ────────────────────────────────
 
-def _setup_result(**kw) -> dict:
-    base = {
-        "symbol": "AKBNK.IS", "signal": "SETUP", "price": 45.20,
-        "reason": "Sıkışma aktif | RSI 55 | Direncin %3.2 altında",
-        "risk_level": "LOW", "strength": 0.83,
-        "stop_loss": 43.10, "take_profit": 47.50,
-        "conditions_met": 5, "distance_to_res_pct": 3.2,
-    }
-    return {**base, **kw}
-
-
 def _early_watch_result(**kw) -> dict:
     base = {
         "symbol": "EREGL.IS", "signal": "EARLY_WATCH", "price": 118.40,
@@ -310,26 +292,6 @@ def _late_result(**kw) -> dict:
 
 
 class TestNewSignalFormats:
-    def test_setup_header(self):
-        msg = format_signal_message(_setup_result())
-        assert "HAZIRLIK" in msg or "SETUP" in msg
-
-    def test_setup_emoji(self):
-        msg = format_signal_message(_setup_result())
-        assert "🟡" in msg
-
-    def test_setup_contains_symbol(self):
-        msg = format_signal_message(_setup_result())
-        assert "AKBNK" in msg
-        assert ".IS" not in msg
-
-    def test_setup_contains_distance(self):
-        msg = format_signal_message(_setup_result())
-        assert "3.2" in msg
-
-    def test_setup_contains_disclaimer(self):
-        assert _DISCLAIMER in format_signal_message(_setup_result())
-
     def test_early_watch_header(self):
         msg = format_signal_message(_early_watch_result())
         assert "YAKLAŞIYOR" in msg or "EARLY" in msg
@@ -361,21 +323,19 @@ class TestNewSignalFormats:
     def test_late_breakout_contains_disclaimer(self):
         assert _DISCLAIMER in format_signal_message(_late_result())
 
-    def test_format_bist100_early_signals_with_both(self):
-        results = [_early_watch_result(), _setup_result()]
+    def test_format_bist100_early_signals_lists_early_watch(self):
+        results = [_early_watch_result()]
         msg = format_bist100_early_signals(results)
         assert "EREGL" in msg
-        assert "AKBNK" in msg
 
     def test_format_bist100_early_signals_empty(self):
         msg = format_bist100_early_signals([])
         assert msg == ""
 
     def test_scan_summary_shows_early_watch_count(self):
-        results = [_early_watch_result(), _setup_result(), _buy_result()]
+        results = [_early_watch_result(), _buy_result()]
         msg = format_scan_summary(results)
         assert "EARLY" in msg or "WATCH" in msg
-        assert "SETUP" in msg
 
     def test_scan_summary_lists_early_watch_symbols(self):
         results = [_early_watch_result()]
@@ -406,8 +366,8 @@ def _full_result(signal: str, symbol: str, score: int, **kw) -> dict:
 def _make_report(results: list, **kw) -> dict:
     base = {
         "label": "BIST100", "results": results,
-        "scanned": 100, "buy_count": 0, "watch_count": 0,
-        "setup_count": 0, "early_watch_count": 0, "late_breakout_count": 0,
+        "scanned": 100, "buy_count": 0,
+        "early_watch_count": 0, "late_breakout_count": 0,
         "error_count": 3, "elapsed_seconds": 21.0, "market_filter": "unfavorable",
     }
     return {**base, **kw}
@@ -416,7 +376,7 @@ def _make_report(results: list, **kw) -> dict:
 class TestFormatBist100FullReport:
     def test_summary_line_contains_all_types(self):
         msg = format_bist100_full_report(_make_report([]))
-        for keyword in ("EARLY", "SETUP", "WATCH", "BUY", "LATE"):
+        for keyword in ("EARLY", "BUY", "LATE"):
             assert keyword in msg
 
     def test_empty_sections_not_shown(self):
@@ -432,11 +392,11 @@ class TestFormatBist100FullReport:
         assert "ASELS" in msg
 
     def test_symbol_row_contains_required_fields(self):
-        r = _full_result("WATCH", "THYAO", 65,
+        r = _full_result("EARLY_WATCH", "THYAO", 65,
                          rsi_14=57.0, volume_ratio=1.18,
                          distance_to_res_pct=5.4, daily_change_pct=1.2,
                          close_to_ema20_pct=2.8)
-        msg = format_bist100_full_report(_make_report([r], watch_count=1))
+        msg = format_bist100_full_report(_make_report([r], early_watch_count=1))
         assert "THYAO" in msg
         assert "65" in msg      # score
         assert "57" in msg      # rsi
@@ -458,23 +418,19 @@ class TestFormatBist100FullReport:
         msg = format_bist100_full_report(_make_report([ew, buy]))
         assert msg.find("*🟠 EARLY WATCH*") < msg.find("*🟢 BUY*")
 
-    def test_section_order_all_five(self):
+    def test_section_order_all_three(self):
         results = [
             _full_result("LATE_BREAKOUT", "LATE1", 50),
             _full_result("BUY",           "BUY1",  80),
-            _full_result("WATCH",         "WAT1",  40),
-            _full_result("SETUP",         "SET1",  60),
             _full_result("EARLY_WATCH",   "EWA1",  70),
         ]
         msg = format_bist100_full_report(_make_report(results))
         positions = {
-            "EW":    msg.find("*🟠 EARLY WATCH*"),
-            "SETUP": msg.find("*🟡 SETUP*"),
-            "WATCH": msg.find("*👀 WATCH*"),
-            "BUY":   msg.find("*🟢 BUY*"),
-            "LATE":  msg.find("*🔴 LATE BREAKOUT*"),
+            "EW":   msg.find("*🟠 EARLY WATCH*"),
+            "BUY":  msg.find("*🟢 BUY*"),
+            "LATE": msg.find("*🔴 LATE BREAKOUT*"),
         }
-        assert positions["EW"] < positions["SETUP"] < positions["WATCH"] < positions["BUY"] < positions["LATE"]
+        assert positions["EW"] < positions["BUY"] < positions["LATE"]
 
     def test_no_section_header_when_empty(self):
         r = _full_result("BUY", "ASELS", 80)
@@ -499,10 +455,10 @@ class TestFormatBist100FullReport:
         assert "Direnç: `–`" in msg
 
     def test_none_fields_show_dash(self):
-        r = _full_result("WATCH", "THYAO", 50,
+        r = _full_result("EARLY_WATCH", "THYAO", 50,
                          rsi_14=None, volume_ratio=None,
                          daily_change_pct=None, close_to_ema20_pct=None)
-        msg = format_bist100_full_report(_make_report([r], watch_count=1))
+        msg = format_bist100_full_report(_make_report([r], early_watch_count=1))
         assert "–" in msg
 
 

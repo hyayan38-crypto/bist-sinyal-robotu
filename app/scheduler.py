@@ -56,7 +56,7 @@ async def run_bist100_scan(force_market_refresh: bool = False) -> dict:
     3. Tarama raporunu gönder
 
     Returns:
-        Tarama raporu dict'i (buy_count, watch_count, scanned, error_count vb.)
+        Tarama raporu dict'i (buy_count, early_watch_count, scanned, error_count vb.)
     """
     started_at = datetime.now(_TZ)
     logger.info(f"BIST100 taraması başladı — {started_at.strftime('%d.%m.%Y %H:%M')} (TR)")
@@ -73,16 +73,13 @@ async def run_bist100_scan(force_market_refresh: bool = False) -> dict:
 
     results         = report.get("results", [])
     early_watch_list = [r for r in results if r["signal"] == "EARLY_WATCH"]
-    setup_list       = [r for r in results if r["signal"] == "SETUP"]
     buy_list         = [r for r in results if r["signal"] == "BUY"]
     late_list        = [r for r in results if r["signal"] == "LATE_BREAKOUT"]
-    watch_list       = [r for r in results if r["signal"] == "WATCH"]
 
     logger.info(
         f"BIST100 tarama bitti: {report['scanned']} sembol | "
         f"{len(buy_list)} BUY | {len(early_watch_list)} EARLY_WATCH | "
-        f"{len(setup_list)} SETUP | {len(late_list)} LATE | "
-        f"{len(watch_list)} WATCH | "
+        f"{len(late_list)} LATE | "
         f"{report['error_count']} hata | {report['elapsed_seconds']:.1f}s"
     )
 

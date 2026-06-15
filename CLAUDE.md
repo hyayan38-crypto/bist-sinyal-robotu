@@ -60,7 +60,7 @@ generate_signal()        → app/strategies/trend_breakout.py  BreakoutSignal di
         ↓
 is_market_favorable()    → app/risk/market_filter.py   XU100 > EMA50 kontrolü (1s TTL)
         ↓
-scan_market()            → app/signals/scanner.py      BUY / WATCH listesi
+scan_market()            → app/signals/scanner.py      EARLY_WATCH / BUY / LATE_BREAKOUT listesi
         ↓
 send_telegram_message()  → app/notifications/telegram.py
 ```

@@ -1,15 +1,16 @@
 """
 Piyasa Tarayıcı
 ===============
-Sembolleri tarar; aşağıdaki sinyal tiplerini döner:
+Sembolleri tarar; aşağıdaki 3 sinyal tipini döner:
 
-  EARLY_WATCH  → Kırılıma ≤%2, hacim canlanıyor, MACD ve fiyat yükseliyor
-  SETUP        → Squeeze aktif, dirençe ≤%5, düşük hacim, RSI orta bölge
+  EARLY_WATCH  → Kırılıma yakın, hacim canlanıyor, MACD ve fiyat yükseliyor
   BUY          → Trend kırılımı — tüm koşullar sağlandı, geç değil
-  WATCH        → Trend doğru ama kırılım henüz yok (eski mantık, geriye dönük uyumlu)
   LATE_BREAKOUT → Tüm BUY koşulları sağlandı ancak geç kalınma işaretleri var
 
-Tarama sırası: EARLY_WATCH → SETUP → BUY → WATCH → LATE_BREAKOUT
+Tarama/görüntüleme sırası: EARLY_WATCH → BUY → LATE_BREAKOUT
+
+Not: pre_breakout_squeeze içindeki SETUP koşulları EARLY_WATCH için
+ara basamak olarak hesaplanır ama ayrı bir sinyal olarak yayınlanmaz.
 
 BIST100 Tarama:
   scan_bist100() / scan_bist50() / scan_bist30()
@@ -61,20 +62,12 @@ from app.risk.market_filter import (
     STATUS_UNAVAILABLE,
     STATUS_UNFAVORABLE,
 )
-from app.strategies.trend_breakout import (
-    generate_signal as tb_generate,
-    _VOLUME_MULT,
-    _RSI_LOW,
-    _RSI_HIGH,
-)
+from app.strategies.trend_breakout import generate_signal as tb_generate
 from app.strategies.pre_breakout_squeeze import generate_setup_signal as pbs_generate
 
 # ── Eşikler ───────────────────────────────────────────────────────────────────
 
-_WATCH_MIN_CONDITIONS   = 2
-_WATCH_RESISTANCE_PCT   = 0.03
 _BUY_MIN_STRENGTH       = 0.0
-_WATCH_RSI_RANGE        = (_RSI_LOW - 10, _RSI_HIGH)
 
 _LIQUIDITY_MIN_TL       = 50_000_000
 _SCORE_VOLUME_MULT      = 2.0
@@ -90,10 +83,8 @@ _PARALLEL_BATCH_DELAY   = 0.3
 # Görüntüleme sırası: küçük sayı = önce
 _SIGNAL_ORDER = {
     "EARLY_WATCH":   0,
-    "SETUP":         1,
-    "BUY":           2,
-    "WATCH":         3,
-    "LATE_BREAKOUT": 4,
+    "BUY":           1,
+    "LATE_BREAKOUT": 2,
 }
 
 
@@ -134,7 +125,7 @@ def clear_scan_cache():
 @dataclass
 class ScanResult:
     symbol:               str
-    signal:               str    # "EARLY_WATCH"|"SETUP"|"BUY"|"WATCH"|"LATE_BREAKOUT"
+    signal:               str    # "EARLY_WATCH"|"BUY"|"LATE_BREAKOUT"
     price:                float
     reason:               str
     risk_level:           str
@@ -232,45 +223,6 @@ def _liquidity_ok(df: pd.DataFrame, min_tl: float = _LIQUIDITY_MIN_TL) -> bool:
     return avg_tl >= min_tl
 
 
-# ── WATCH koşulu değerlendirme (geriye dönük uyumlu) ─────────────────────────
-
-def _assess_watch(details: dict) -> tuple[bool, int, Optional[float]]:
-    c1 = bool(details.get("c1_above_ema20", False))
-    c2 = bool(details.get("c2_ema_uptrend", False))
-    c3 = bool(details.get("c3_breakout", False))
-    c4 = bool(details.get("c4_volume_surge", False))
-    c5 = bool(details.get("c5_rsi_range", False))
-
-    if not (c1 and c2):
-        return False, sum([c1, c2, c3, c4, c5]), None
-
-    extra_met  = sum([c3, c4, c5])
-    total_met  = 2 + extra_met
-
-    close    = details.get("close", 0.0)
-    prev_res = details.get("prev_resistance", 0.0)
-    dist_pct = round((prev_res - close) / close * 100, 2) if close > 0 and prev_res > 0 else None
-
-    approaching = dist_pct is not None and 0 < dist_pct <= _WATCH_RESISTANCE_PCT * 100
-
-    rsi    = details.get("rsi_14", 0.0)
-    rsi_ok = _WATCH_RSI_RANGE[0] <= rsi <= _WATCH_RSI_RANGE[1]
-
-    is_watch = extra_met >= _WATCH_MIN_CONDITIONS or (extra_met >= 1 and approaching and rsi_ok)
-    return is_watch, total_met, dist_pct
-
-
-def _watch_reason(details: dict, dist_pct: Optional[float]) -> str:
-    parts = ["Trend yukarı (EMA20>EMA50)"]
-    if details.get("c4_volume_surge"):
-        parts.append(f"Hacim x{details.get('volume_ratio', 0):.1f}")
-    if details.get("c5_rsi_range"):
-        parts.append(f"RSI14: {details.get('rsi_14', 0):.1f}")
-    if dist_pct is not None and dist_pct > 0:
-        parts.append(f"Dirence %{dist_pct:.1f} uzakta")
-    return " | ".join(parts)
-
-
 # ── Sinyal işleme çekirdeği ───────────────────────────────────────────────────
 
 def _ema20_pct(details: dict) -> Optional[float]:
@@ -289,7 +241,7 @@ def _process_df(
 ) -> Optional[ScanResult]:
     """
     İndikatörlü DataFrame'den sinyal üretir ve ScanResult döner.
-    Tüm sinyal tiplerini (EARLY_WATCH, SETUP, BUY, WATCH, LATE_BREAKOUT) destekler.
+    Sinyal tiplerini (EARLY_WATCH, BUY, LATE_BREAKOUT) destekler.
     """
     tb          = tb_generate(df)
     signal_type = tb["signal"]
@@ -339,7 +291,7 @@ def _process_df(
         pbs_signal  = pbs["signal"]
         pbs_details = pbs.get("details", {})
 
-        if pbs_signal in ("EARLY_WATCH", "SETUP"):
+        if pbs_signal == "EARLY_WATCH":
             pbs_score, pbs_reasons = _pbs_strength_score(pbs_details)
             dist_pct = pbs_details.get("distance_to_res_pct", None)
             mf_note = ""
@@ -368,35 +320,13 @@ def _process_df(
                 close_to_ema20_pct=pbs_details.get("close_to_ema20_pct"),
             )
 
-        # pbs HOLD — EW koşul başarısızlıklarını kaydet
+        # pbs EARLY_WATCH üretmedi — EW koşul başarısızlıklarını tanı için kaydet
         if ew_diag is not None:
             ew_flags = pbs_details.get("ew_flags", {})
             if ew_flags:
                 ew_diag.record(ew_flags)
 
-        # Geriye dönük WATCH mantığı
-        is_watch, n_met, dist_pct = _assess_watch(details)
-        if not is_watch:
-            return None
-
-        mf_note = ""
-        if mf.status == STATUS_UNFAVORABLE:
-            mf_note = " [Endeks Olumsuz]"
-        elif mf.status == STATUS_UNAVAILABLE:
-            mf_note = " [Endeks Bilinmiyor]"
-
-        return ScanResult(
-            symbol=symbol, signal="WATCH", price=price,
-            reason=_watch_reason(details, dist_pct) + mf_note,
-            risk_level=risk_level, strength=round(n_met / 5, 2),
-            strategy="trend_breakout", stop_loss=None, take_profit=None,
-            market_filter=mf.status, conditions_met=n_met,
-            distance_to_res_pct=dist_pct, strength_score=score, score_reasons=reasons,
-            rsi_14=details.get("rsi_14"),
-            volume_ratio=details.get("volume_ratio"),
-            daily_change_pct=details.get("daily_change_pct"),
-            close_to_ema20_pct=_ema20_pct(details),
-        )
+        return None
 
     return None  # SELL → ilgi yok
 
@@ -472,13 +402,13 @@ def _scan_parallel(
     """
     Sembolleri paralel olarak tarar.
 
-    Sıralama: EARLY_WATCH → SETUP → BUY → WATCH → LATE_BREAKOUT
+    Sıralama: EARLY_WATCH → BUY → LATE_BREAKOUT
     Her grup içinde strength_score'a göre azalan.
 
     Returns:
         {
-          label, results, scanned, buy_count, watch_count,
-          setup_count, early_watch_count, late_breakout_count,
+          label, results, scanned, buy_count,
+          early_watch_count, late_breakout_count,
           error_count, elapsed_seconds, market_filter
         }
     """
@@ -523,12 +453,12 @@ def _scan_parallel(
             if result is None:
                 continue
 
-            if not include_watch and result.signal in ("WATCH", "SETUP", "EARLY_WATCH", "LATE_BREAKOUT"):
+            if not include_watch and result.signal in ("EARLY_WATCH", "LATE_BREAKOUT"):
                 continue
 
             all_results.append(result)
 
-    # Tarama sırası: EARLY_WATCH → SETUP → BUY → WATCH → LATE_BREAKOUT
+    # Tarama sırası: EARLY_WATCH → BUY → LATE_BREAKOUT
     # Her grup içinde strength_score azalan
     all_results.sort(
         key=lambda r: (_SIGNAL_ORDER.get(r.signal, 99), -r.strength_score)
@@ -543,9 +473,7 @@ def _scan_parallel(
         f"[{label}] Tarama tamamlandı | {len(symbols)} sembol | "
         f"{signal_counts.get('BUY', 0)} BUY | "
         f"{signal_counts.get('EARLY_WATCH', 0)} EARLY_WATCH | "
-        f"{signal_counts.get('SETUP', 0)} SETUP | "
         f"{signal_counts.get('LATE_BREAKOUT', 0)} LATE | "
-        f"{signal_counts.get('WATCH', 0)} WATCH | "
         f"{len(error_symbols)} hata | {elapsed:.1f}s | Endeks: {mf.status}"
     )
     if error_symbols:
@@ -554,14 +482,6 @@ def _scan_parallel(
     # ── İlk 15 sinyal tablosu ──────────────────────────────────────────────────
     if all_results:
         _log_top15(label, all_results)
-
-    # ── SETUP > 20 guard ──────────────────────────────────────────────────────
-    setup_count = signal_counts.get("SETUP", 0)
-    if setup_count > 20:
-        logger.warning(
-            f"[{label}] SETUP sayısı yüksek ({setup_count}) — "
-            "filtreler değiştirilmedi, yalnızca raporlanıyor."
-        )
 
     # ── EARLY_WATCH = 0 tanısı ────────────────────────────────────────────────
     if signal_counts.get("EARLY_WATCH", 0) == 0 and ew_diag.has_data():
@@ -576,8 +496,6 @@ def _scan_parallel(
         "results":             [r.to_dict() for r in all_results],
         "scanned":             len(symbols),
         "buy_count":           signal_counts.get("BUY", 0),
-        "watch_count":         signal_counts.get("WATCH", 0),
-        "setup_count":         signal_counts.get("SETUP", 0),
         "early_watch_count":   signal_counts.get("EARLY_WATCH", 0),
         "late_breakout_count": signal_counts.get("LATE_BREAKOUT", 0),
         "error_count":         len(error_symbols),
@@ -611,8 +529,7 @@ def _log_top15(label: str, results: list[ScanResult]) -> None:
 def _empty_report(label: str) -> dict:
     return {
         "label": label, "results": [], "scanned": 0,
-        "buy_count": 0, "watch_count": 0,
-        "setup_count": 0, "early_watch_count": 0, "late_breakout_count": 0,
+        "buy_count": 0, "early_watch_count": 0, "late_breakout_count": 0,
         "error_count": 0, "error_symbols": [],
         "elapsed_seconds": 0.0, "market_filter": "unknown",
     }
@@ -686,7 +603,7 @@ def scan_market(
     Tüm sembolleri sırayla tarar; tüm sinyal tiplerini döner.
     Mevcut API ve testlerle geriye dönük uyumludur.
 
-    Sıralama: EARLY_WATCH → SETUP → BUY → WATCH → LATE_BREAKOUT
+    Sıralama: EARLY_WATCH → BUY → LATE_BREAKOUT
     """
     if not symbols:
         logger.warning("scan_market: boş sembol listesi")
@@ -710,7 +627,7 @@ def scan_market(
         result = _scan_symbol(symbol, mf, period=period)
         if result is None:
             continue
-        if not include_watch and result.signal in ("WATCH", "SETUP", "EARLY_WATCH", "LATE_BREAKOUT"):
+        if not include_watch and result.signal in ("EARLY_WATCH", "LATE_BREAKOUT"):
             continue
         all_results.append(result)
 
@@ -724,7 +641,7 @@ def scan_market(
     logger.info(
         f"Tarama tamamlandı | {len(symbols)} sembol | "
         f"{counts.get('BUY',0)} BUY | {counts.get('EARLY_WATCH',0)} EARLY_WATCH | "
-        f"{counts.get('SETUP',0)} SETUP | {counts.get('LATE_BREAKOUT',0)} LATE | "
+        f"{counts.get('LATE_BREAKOUT',0)} LATE | "
         f"{elapsed:.1f}s | Endeks: {mf.status}"
     )
 
