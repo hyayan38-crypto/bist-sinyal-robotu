@@ -12,6 +12,7 @@ yalnızca uyarı loglanır ve False/None döner.
 from __future__ import annotations
 
 import asyncio
+import io
 from datetime import datetime
 from typing import Optional
 
@@ -91,11 +92,78 @@ async def send_telegram_message(
     return False
 
 
+async def send_telegram_photo(
+    photo: bytes,
+    caption: str = "",
+    parse_mode: str = ParseMode.MARKDOWN,
+    retries: int = 2,
+) -> bool:
+    """
+    PNG/JPEG byte içeriğini foto olarak gönderir (işaretli sinyal grafiği).
+    `send_telegram_message` ile aynı fail-open desen: yapılandırma eksikse veya
+    içerik boşsa sessizce False döner, istisna fırlatmaz.
+    """
+    if not photo:
+        return False
+    bot = _get_bot()
+    if not bot:
+        logger.warning("Telegram bot token ayarlanmamış — foto atlandı")
+        return False
+    if not settings.telegram_chat_id:
+        logger.warning("Telegram chat ID ayarlanmamış — foto atlandı")
+        return False
+
+    for attempt in range(1, retries + 2):
+        try:
+            await bot.send_photo(
+                chat_id=settings.telegram_chat_id,
+                photo=io.BytesIO(photo),
+                caption=caption or None,
+                parse_mode=parse_mode if caption else None,
+            )
+            logger.debug(f"Telegram fotoğrafı gönderildi (deneme {attempt})")
+            return True
+        except TelegramError as exc:
+            if attempt <= retries:
+                logger.warning(f"Telegram foto hata (deneme {attempt}/{retries+1}): {exc} — yeniden deneniyor")
+                await asyncio.sleep(1)
+            else:
+                logger.error(f"Telegram foto gönderme başarısız: {exc}")
+    return False
+
+
 # ── Mesaj formatlayıcılar ─────────────────────────────────────────────────────
 
 def _strip_is(symbol: str) -> str:
     """'ASELS.IS' → 'ASELS'"""
     return symbol.removesuffix(".IS")
+
+
+def _levels_block(result: dict) -> str:
+    """
+    BUY/LATE için tek temiz stop/hedef satırı üretir.
+
+    Öncelik AI seviyeleri; yoksa sessizce yapı, o da yoksa ATR seviyesine düşer
+    (kullanıcı yalnız AI sonucunu görmek istiyor, ama AI çalışmazsa sinyal
+    stop/hedefsiz kalmasın diye yedek var). AI teyidi varsa 🤖 ile işaretlenir.
+    """
+    ai_sl   = result.get("ai_stop_loss")
+    ai_tp   = result.get("ai_take_profit")
+    ai_note = result.get("ai_rationale")
+
+    sl = ai_sl or result.get("struct_stop_loss")   or result.get("stop_loss")
+    tp = ai_tp or result.get("struct_take_profit") or result.get("take_profit")
+    is_ai = bool(ai_sl and ai_tp)
+    tag = "🤖 " if is_ai else ""
+
+    lines = ""
+    if sl:
+        lines += f"🛑 {tag}Stop: `{sl:.2f} TL`\n"
+    if tp:
+        lines += f"🎯 {tag}Hedef: `{tp:.2f} TL`\n"
+    if is_ai and ai_note:
+        lines += f"💬 _{ai_note}_\n"
+    return lines
 
 
 def format_signal_message(result: dict) -> str:
@@ -141,8 +209,7 @@ def format_signal_message(result: dict) -> str:
         )
 
     if signal == "BUY":
-        sl_line2 = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
-        tp_line2 = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
+        levels = _levels_block(result)
         return (
             f"🚨 *BIST SİNYALİ*\n"
             f"{'─' * 22}\n"
@@ -152,16 +219,14 @@ def format_signal_message(result: dict) -> str:
             f"Güç: `{strength:.0%}`\n"
             f"Sebep: {reason}\n"
             f"Risk: *{risk}*\n"
-            f"{sl_line2}"
-            f"{tp_line2}"
+            f"{levels}"
             f"🕐 `{ts}`\n"
             f"{'─' * 22}\n"
             f"{_DISCLAIMER}"
         )
 
     if signal == "LATE_BREAKOUT":
-        sl_line2 = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
-        tp_line2 = f"🎯 Take Profit: `{tp:.2f} TL`\n" if tp else ""
+        levels = _levels_block(result)
         return (
             f"🔴 *BIST GEÇ KIRILI*\n"
             f"{'─' * 22}\n"
@@ -171,8 +236,7 @@ def format_signal_message(result: dict) -> str:
             f"Güç: `{strength:.0%}`\n"
             f"Sebep: {reason}\n"
             f"Risk: *{risk}*\n"
-            f"{sl_line2}"
-            f"{tp_line2}"
+            f"{levels}"
             f"⚠️ Hareket kaçmış olabilir — dikkatli olun\n"
             f"🕐 `{ts}`\n"
             f"{'─' * 22}\n"
@@ -372,11 +436,28 @@ def _format_symbol_row(idx: int, r: dict) -> str:
     day_s  = f"%{day:+.1f}"   if day  is not None else "–"
     ema_s  = f"%{ema20:+.1f}" if ema20 is not None else "–"
 
-    return (
+    row = (
         f"{idx}) *{sym}* | Skor: `{score}` | Fiyat: `{price:.2f}` | "
         f"RSI: `{rsi_s}` | Hacim: `{vol_s}` | "
         f"Direnç: `{dist_s}` | Günlük: `{day_s}` | EMA20: `{ema_s}`"
     )
+
+    # BUY/LATE için kompakt stop/hedef alt satırı — tek değer (AI > yapı > ATR)
+    if r.get("signal") in ("BUY", "LATE_BREAKOUT"):
+        is_ai = bool(r.get("ai_stop_loss") and r.get("ai_take_profit"))
+        stop = _best_level(r, "stop_loss", "struct_stop_loss", "ai_stop_loss")
+        targ = _best_level(r, "take_profit", "struct_take_profit", "ai_take_profit")
+        if stop is not None or targ is not None:
+            tag = "🤖 " if is_ai else ""
+            s = f"`{stop:.2f}`" if stop is not None else "–"
+            t = f"`{targ:.2f}`" if targ is not None else "–"
+            row += f"\n    {tag}🛑 {s} | 🎯 {t}"
+    return row
+
+
+def _best_level(r: dict, atr_key: str, struct_key: str, ai_key: str):
+    """Tek tercih edilen seviye: AI > yapı > ATR (ilk dolu olan)."""
+    return r.get(ai_key) or r.get(struct_key) or r.get(atr_key)
 
 
 def format_bist100_full_report(report: dict, top_n: int = 5) -> str:

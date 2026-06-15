@@ -33,7 +33,9 @@ from app.notifications.telegram import (
     format_bist100_full_report,
     format_performance_summary,
     send_telegram_message,
+    send_telegram_photo,
 )
+from app.config import settings
 from app.signals.scanner import scan_bist100
 
 _TZ = ZoneInfo("Europe/Istanbul")
@@ -97,6 +99,20 @@ async def run_bist100_scan(force_market_refresh: bool = False) -> dict:
 
     # Tüm sinyal tiplerini tek mesajda gönder
     await _send(format_bist100_full_report(report))
+
+    # İşaretli grafikler (opsiyonel) — BUY/LATE sinyalleri için
+    if settings.enable_signal_charts:
+        import base64
+        for r in buy_list + late_list:
+            b64 = r.get("chart_b64")
+            if not b64:
+                continue
+            try:
+                png = base64.standard_b64decode(b64)
+                sym = r.get("symbol", "").removesuffix(".IS")
+                await send_telegram_photo(png, caption=f"📈 *{sym}* — {r.get('signal')}")
+            except Exception as exc:
+                logger.error(f"Grafik gönderim hatası ({r.get('symbol')}): {exc}")
 
     # ── Sağlık uyarısı: veri alınamayan sembol oranı yüksekse haber ver ───────
     scanned     = report.get("scanned", 0)

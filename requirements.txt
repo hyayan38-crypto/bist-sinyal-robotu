@@ -18,6 +18,11 @@ pandas-ta-classic==0.3.14b2
 # ── Backtest ──────────────────────────────────────────────────────────────────
 backtesting==0.3.3
 
+# ── Grafik-bazlı seviyeler (opsiyonel; varsayılan kapalı katmanlar) ────────────
+matplotlib==3.9.2     # mum grafiği render (Agg backend)
+mplfinance==0.12.10b0 # OHLC mum grafiği
+anthropic==0.45.2     # Claude vision ile stop/hedef teyidi
+
 # ── Database ──────────────────────────────────────────────────────────────────
 sqlalchemy==2.0.36
 aiosqlite==0.20.0

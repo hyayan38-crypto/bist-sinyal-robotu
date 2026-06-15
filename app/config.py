@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     # uygulanır; altında kalan BUY/LATE sinyalleri yayınlanmaz.
     min_risk_reward: float = 1.5
 
+    # Grafik-bazlı seviyeler (ATR'ye ek; ikisi de fail-open, varsayılan kapalı)
+    # AI katmanı yalnızca anahtar girilip enable_ai_levels=True olunca devreye girer;
+    # eksikse sinyal ATR/yapı seviyeleriyle sessizce devam eder.
+    anthropic_api_key: str = ""
+    enable_ai_levels: bool = False     # Claude vision ile stop/hedef teyidi
+    enable_signal_charts: bool = False  # işaretli mum grafiğini Telegram'a gönder
+
     model_config = SettingsConfigDict(
         # Mutlak yol — uvicorn hangi dizinden çalıştırılırsa çalıştırılsın .env bulunur
         env_file=str(_ENV_FILE),
