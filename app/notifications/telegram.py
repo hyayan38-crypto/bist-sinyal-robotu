@@ -437,8 +437,8 @@ def _format_symbol_row(idx: int, r: dict) -> str:
         f"Direnç: `{dist_s}` | Günlük: `{day_s}` | EMA20: `{ema_s}`"
     )
 
-    # BUY/LATE için kompakt stop/hedef alt satırı — tek değer (AI > yapı > ATR)
-    if r.get("signal") in ("BUY", "LATE_BREAKOUT"):
+    # Stop/hedef alt satırı — tek değer (AI > yapı > ATR); üç sinyal tipinde de
+    if r.get("signal") in ("EARLY_WATCH", "BUY", "LATE_BREAKOUT"):
         is_ai = bool(r.get("ai_stop_loss") and r.get("ai_take_profit"))
         stop = _best_level(r, "stop_loss", "struct_stop_loss", "ai_stop_loss")
         targ = _best_level(r, "take_profit", "struct_take_profit", "ai_take_profit")
