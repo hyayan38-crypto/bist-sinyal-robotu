@@ -90,6 +90,25 @@ Yeni strateji eklemek için:
 1. **`market_filter.py`** — XU100 endeks filtresi. Fail-open: veri yoksa BUY'ları engellemez.
 2. **`risk/manager.py`** — R/R oranı (min 1.5), sinyal gücü, açık sinyal limiti.
 
+### Grafik-Bazlı Stop/Hedef Seviyeleri (ATR'ye ek)
+
+BUY/LATE sinyallerinde ATR seviyelerinin (`trend_breakout._atr_sl_tp`) yanına iki
+**fail-open** katman eklenir; `scanner._graphic_levels()` çağırır:
+
+1. **`app/indicators/structure.py`** — swing dip/tepe + `resistance_20` bazlı
+   stop/hedef (`structure_sl_tp`). Deterministik, hep çalışır; yapı yoksa `None`.
+2. **`app/ai/vision_levels.py`** — `app/charts/render.py` ile üretilen işaretli mum
+   grafiğini Claude'a (`claude-opus-4-8`, vision + structured outputs) gönderip
+   seviyeleri teyit/düzeltir. **Varsayılan kapalı**: `enable_ai_levels` + dolu
+   `anthropic_api_key` gerekir; eksikse sessizce atlanır.
+
+Seviyeler `ScanResult` alanları olarak taşınır (`struct_*`, `ai_*`, `chart_b64`).
+Telegram'da `_levels_block` / `_best_level` **tek temiz stop/hedef** gösterir:
+öncelik AI (🤖 etiketli), yoksa sessizce yapı, o da yoksa ATR seviyesine düşer.
+`enable_signal_charts` açıksa scheduler `send_telegram_photo` ile grafiği yollar.
+Config bayrakları: `app/config.py` → `anthropic_api_key`, `enable_ai_levels`,
+`enable_signal_charts`.
+
 ### Backtest
 
 `runner.py` → `TrendBreakoutBT(Strategy)` backtesting.py sınıfı  
@@ -126,5 +145,8 @@ Lifespan'da başlar/durur. Test ortamında `conftest.py`'deki session-scope mock
 | İndikatör kolonları | `app/indicators/technical.py` → `_INDICATOR_COLS` |
 | Strateji sabitleri | `app/strategies/trend_breakout.py` → `_STOP_LOSS_PCT`, `_TAKE_PROFIT_PCT` vb. |
 | Strength score sabitleri | `app/signals/scanner.py` → `_SCORE_*` sabitleri |
+| Yapı (swing/destek-direnç) seviyeleri | `app/indicators/structure.py` |
+| Sinyal grafiği render | `app/charts/render.py` |
+| Claude vision seviye teyidi | `app/ai/vision_levels.py` |
 | API endpoint'leri | `app/main.py` |
 | Systemd servis | `/etc/systemd/system/bist-robot.service` |

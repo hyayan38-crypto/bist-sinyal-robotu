@@ -65,6 +65,7 @@ from app.risk.market_filter import (
 )
 from app.strategies.trend_breakout import generate_signal as tb_generate
 from app.strategies.pre_breakout_squeeze import generate_setup_signal as pbs_generate
+from app.indicators.structure import structure_sl_tp
 
 # ── Eşikler ───────────────────────────────────────────────────────────────────
 
@@ -132,7 +133,7 @@ class ScanResult:
     risk_level:           str
     strength:             float
     strategy:             str
-    stop_loss:            Optional[float]
+    stop_loss:            Optional[float]   # ATR bazlı (mevcut, değişmez)
     take_profit:          Optional[float]
     market_filter:        str
     conditions_met:       int
@@ -143,6 +144,14 @@ class ScanResult:
     volume_ratio:         Optional[float] = None
     daily_change_pct:     Optional[float] = None
     close_to_ema20_pct:   Optional[float] = None
+    # Grafik-bazlı seviyeler (ATR'ye ek; yoksa None) — yalnız BUY/LATE'de dolar
+    struct_stop_loss:     Optional[float] = None
+    struct_take_profit:   Optional[float] = None
+    ai_stop_loss:         Optional[float] = None
+    ai_take_profit:       Optional[float] = None
+    ai_rationale:         Optional[str]   = None
+    # İşaretli grafik (base64 PNG) — yalnız enable_signal_charts açıkken dolar
+    chart_b64:            Optional[str]   = field(default=None, repr=False)
     scanned_at:           str = field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
 
     def to_dict(self) -> dict:
@@ -266,6 +275,55 @@ def _rr_gate_ok(symbol: str, signal: str, price: float,
     return True
 
 
+def _graphic_levels(symbol: str, df: pd.DataFrame, price: float,
+                    atr_sl: Optional[float], atr_tp: Optional[float]) -> dict:
+    """
+    BUY/LATE sinyali için grafik-bazlı seviyeleri hesaplar (fail-open).
+
+    Her zaman: yapı (swing/destek-direnç) stop/hedef.
+    Opsiyonel: enable_ai_levels açık + anahtar varsa Claude vision teyidi.
+
+    Hata durumunda ilgili alanlar None kalır; sinyal yine üretilir.
+    Döner: {struct_stop_loss, struct_take_profit, ai_stop_loss,
+            ai_take_profit, ai_rationale}
+    """
+    out: dict = {
+        "struct_stop_loss": None, "struct_take_profit": None,
+        "ai_stop_loss": None, "ai_take_profit": None, "ai_rationale": None,
+        "chart_b64": None,
+    }
+    atr = df["atr_14"].iloc[-1] if "atr_14" in df.columns else None
+
+    try:
+        s_sl, s_tp = structure_sl_tp(df, price, atr)
+        out["struct_stop_loss"], out["struct_take_profit"] = s_sl, s_tp
+    except Exception as exc:
+        logger.warning(f"{symbol} yapı seviyesi hesabı başarısız: {exc}")
+        s_sl, s_tp = None, None
+
+    # Grafik yalnız AI teyidi veya Telegram'a gönderim açıkken üretilir.
+    if settings.enable_ai_levels or settings.enable_signal_charts:
+        try:
+            from app.charts.render import render_signal_chart
+
+            png = render_signal_chart(symbol, df, atr_sl, atr_tp, s_sl, s_tp)
+            if png:
+                if settings.enable_ai_levels:
+                    from app.ai.vision_levels import confirm_levels
+                    ai = confirm_levels(symbol, png, price, atr_sl, atr_tp, s_sl, s_tp)
+                    if ai:
+                        out["ai_stop_loss"]   = ai.stop_loss
+                        out["ai_take_profit"] = ai.take_profit
+                        out["ai_rationale"]   = ai.rationale
+                if settings.enable_signal_charts:
+                    import base64
+                    out["chart_b64"] = base64.standard_b64encode(png).decode("ascii")
+        except Exception as exc:
+            logger.warning(f"{symbol} grafik/AI katmanı başarısız: {exc}")
+
+    return out
+
+
 def _process_df(
     symbol: str,
     df: pd.DataFrame,
@@ -291,6 +349,7 @@ def _process_df(
             return None
         if not _rr_gate_ok(symbol, "BUY", price, tb["stop_loss"], tb["take_profit"]):
             return None
+        gl = _graphic_levels(symbol, df, price, tb["stop_loss"], tb["take_profit"])
         return ScanResult(
             symbol=symbol, signal="BUY", price=price, reason=tb["reason"],
             risk_level=risk_level, strength=strength, strategy="trend_breakout",
@@ -301,6 +360,7 @@ def _process_df(
             volume_ratio=details.get("volume_ratio"),
             daily_change_pct=details.get("daily_change_pct"),
             close_to_ema20_pct=_ema20_pct(details),
+            **gl,
         )
 
     # ── LATE_BREAKOUT ─────────────────────────────────────────────────────────
@@ -310,6 +370,7 @@ def _process_df(
             return None
         if not _rr_gate_ok(symbol, "LATE_BREAKOUT", price, tb["stop_loss"], tb["take_profit"]):
             return None
+        gl = _graphic_levels(symbol, df, price, tb["stop_loss"], tb["take_profit"])
         return ScanResult(
             symbol=symbol, signal="LATE_BREAKOUT", price=price, reason=tb["reason"],
             risk_level=risk_level, strength=strength, strategy="trend_breakout",
@@ -320,6 +381,7 @@ def _process_df(
             volume_ratio=details.get("volume_ratio"),
             daily_change_pct=details.get("daily_change_pct"),
             close_to_ema20_pct=_ema20_pct(details),
+            **gl,
         )
 
     # ── HOLD → önce pre_breakout_squeeze dene ────────────────────────────────
