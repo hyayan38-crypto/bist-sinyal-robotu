@@ -180,18 +180,14 @@ def format_signal_message(result: dict) -> str:
     reason   = result.get("reason", "")
     risk     = result.get("risk_level", "")
     strength = result.get("strength", 0.0)
-    sl       = result.get("stop_loss")
-    tp       = result.get("take_profit")
     n_met    = result.get("conditions_met")
     dist     = result.get("distance_to_res_pct")
 
     ts = datetime.now().strftime("%d.%m.%Y %H:%M")
 
-    sl_line = f"🛑 Stop Loss: `{sl:.2f} TL`\n" if sl else ""
-    tp_line = f"🎯 Hedef: `{tp:.2f} TL`\n" if tp else ""
-
     if signal == "EARLY_WATCH":
         dist_line = f"Dirence: `%{dist:.1f}`\n" if dist and dist > 0 else ""
+        levels = _levels_block(result)
         return (
             f"🟠 *BIST YAKLAŞIYOR*\n"
             f"{'─' * 22}\n"
@@ -201,8 +197,7 @@ def format_signal_message(result: dict) -> str:
             f"Güç: `{strength:.0%}`\n"
             f"Sebep: {reason}\n"
             f"{dist_line}"
-            f"{sl_line}"
-            f"{tp_line}"
+            f"{levels}"
             f"🕐 `{ts}`\n"
             f"{'─' * 22}\n"
             f"{_DISCLAIMER}"

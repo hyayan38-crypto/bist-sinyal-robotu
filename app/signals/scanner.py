@@ -398,6 +398,7 @@ def _process_df(
                 mf_note = " [Endeks Olumsuz]"
             elif mf.status == STATUS_UNAVAILABLE:
                 mf_note = " [Endeks Bilinmiyor]"
+            gl = _graphic_levels(symbol, df, pbs["price"], pbs["stop_loss"], pbs["take_profit"])
             return ScanResult(
                 symbol=symbol,
                 signal=pbs_signal,
@@ -417,6 +418,7 @@ def _process_df(
                 volume_ratio=pbs_details.get("volume_ratio"),
                 daily_change_pct=pbs_details.get("daily_change_pct"),
                 close_to_ema20_pct=pbs_details.get("close_to_ema20_pct"),
+                **gl,
             )
 
         # pbs EARLY_WATCH üretmedi — EW koşul başarısızlıklarını tanı için kaydet
