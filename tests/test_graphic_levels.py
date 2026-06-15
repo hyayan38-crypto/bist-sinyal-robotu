@@ -6,7 +6,9 @@ import numpy as np
 import pandas as pd
 
 from app.config import settings
-from app.notifications.telegram import _levels_block, _best_level, format_signal_message
+from app.notifications.telegram import (
+    _levels_block, _best_level, _format_symbol_row, format_signal_message,
+)
 from app.signals import scanner as scn
 from app.ai.vision_levels import AILevels
 
@@ -81,6 +83,17 @@ class TestEarlyWatchMessageWithLevels:
         # Yapı seviyeleri tercih edilir; ATR (38.00/44.00) görünmez.
         assert "`38.50 TL`" in msg and "`43.20 TL`" in msg
         assert "38.00" not in msg and "44.00" not in msg
+
+    def test_full_report_row_shows_levels_for_all_signal_types(self):
+        # Zamanlanmış tarama bu yolu kullanır (_format_symbol_row).
+        for sig in ("EARLY_WATCH", "BUY", "LATE_BREAKOUT"):
+            row = _format_symbol_row(1, {
+                "signal": sig, "symbol": "EREGL.IS", "price": 40.0,
+                "stop_loss": 38.0, "take_profit": 44.0,
+                "struct_stop_loss": 38.46, "struct_take_profit": 41.22,
+            })
+            assert "🛑 `38.46`" in row, sig
+            assert "🎯 `41.22`" in row, sig
 
 
 class TestBuyMessageWithLevels:
