@@ -42,9 +42,15 @@ from app.data.symbols import registry
 from app.indicators.technical import add_indicators
 from app.risk.market_filter import invalidate_cache, is_market_favorable
 from app.signals.generator import signal_generator
+from app.signals.tracker import build_performance_summary, evaluate_open_signals
 from app.signals.scanner import scan_market, _scan_symbol, scan_bist30, scan_bist50, scan_bist100
 from app.strategies.trend_breakout import generate_signal as tb_signal
-from app.backtest.runner import run_single as bt_run_single, run_multiple as bt_run_multiple
+from app.backtest.runner import (
+    run_single as bt_run_single,
+    run_multiple as bt_run_multiple,
+    grid_search as bt_grid_search,
+    walk_forward as bt_walk_forward,
+)
 from app.notifications.telegram import send_telegram_message, is_configured
 from app.scheduler import scheduler, run_daily_scan
 from app.utils.helpers import setup_logger
@@ -450,6 +456,66 @@ async def backtest_symbol(
 
 
 @app.get(
+    "/backtest/{symbol}/optimize",
+    summary="Parametre optimizasyonu (grid search)",
+    tags=["Backtest"],
+)
+async def backtest_optimize(
+    symbol: str,
+    period: str = Query("2y", description="Veri periyodu"),
+    metric: str = Query("sharpe_ratio", description="sharpe_ratio · total_return_pct · win_rate_pct · profit_factor"),
+    min_trades: int = Query(5, ge=1, description="Geçerli kombinasyon için min işlem"),
+    top_n: int = Query(10, ge=1, le=50),
+):
+    """
+    Strateji eşiklerini (volume_mult, rsi_low, ATR çarpanları) tüm veri üzerinde
+    tarar ve `metric`'e göre en iyi kombinasyonları döner.
+
+    Not: Aşırı-uyum riski için gerçekçi tahmin `/backtest/{symbol}/walk-forward`.
+    """
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: bt_grid_search(symbol, period=period, metric=metric,
+                                   min_trades=min_trades, top_n=top_n),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get(
+    "/backtest/{symbol}/walk-forward",
+    summary="Walk-forward doğrulama",
+    tags=["Backtest"],
+)
+async def backtest_walk_forward(
+    symbol: str,
+    period: str = Query("5y", description="Veri periyodu (daha uzun → daha çok dilim)"),
+    n_splits: int = Query(4, ge=1, le=10, description="Doğrulama dilimi sayısı"),
+    metric: str = Query("sharpe_ratio"),
+    min_trades: int = Query(3, ge=1),
+):
+    """
+    In-sample optimize → out-of-sample doğrulama. OOS ortalamaları parametrelerin
+    görülmemiş veride gerçek performansını gösterir (aşırı-uyum kontrolü).
+    """
+    try:
+        result = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: bt_walk_forward(symbol, period=period, n_splits=n_splits,
+                                    metric=metric, min_trades=min_trades),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if result.get("error"):
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get(
     "/backtest",
     summary="Tüm sembollere backtest",
     tags=["Backtest"],
@@ -568,6 +634,21 @@ async def signal_history(
             for s in sigs
         ],
     }
+
+
+@app.get("/signals/performance", summary="Sinyal isabet raporu", tags=["Sinyaller"])
+async def signals_performance(
+    days: Optional[int] = Query(None, ge=1, le=365, description="Pencere (gün)"),
+    db: AsyncSession = Depends(get_db),
+):
+    """Son N günde üretilen sinyallerin TP/SL/süre dağılımı ve isabet oranı."""
+    return await build_performance_summary(db, days=days)
+
+
+@app.post("/signals/evaluate", summary="Açık sinyalleri değerlendir", tags=["Sinyaller"])
+async def signals_evaluate(db: AsyncSession = Depends(get_db)):
+    """Açık sinyalleri güncel fiyatla TP/SL/süre açısından kontrol eder ve günceller."""
+    return await evaluate_open_signals(db)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

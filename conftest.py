@@ -45,6 +45,21 @@ def _mock_scheduler_global():
         yield
 
 
+# ── Fiyat önbelleğini testlerde devre dışı bırak ──────────────────────────────
+
+@pytest.fixture(autouse=True, scope="session")
+def _disable_price_cache():
+    """
+    Testler gerçek bist_robot.db dosyasına yazmasın diye SQLite fiyat
+    önbelleğini kapatır; cache özel testleri kendi geçici DB'siyle açar.
+    """
+    from app.config import settings
+    original = settings.price_cache_enabled
+    settings.price_cache_enabled = False
+    yield
+    settings.price_cache_enabled = original
+
+
 # ── Ortak DataFrame fabrikaları ───────────────────────────────────────────────
 
 def make_ohlcv(n: int = 250, trend: str = "up", seed: int = 42) -> pd.DataFrame:

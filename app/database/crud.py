@@ -36,6 +36,28 @@ async def update_signal_status(db: AsyncSession, signal_id: int, status: str):
     await db.commit()
 
 
+async def get_active_signal_for(
+    db: AsyncSession, symbol: str, strategy: str
+) -> Optional[Signal]:
+    """Aynı sembol+strateji için açık (ACTIVE) bir sinyal varsa döner — tekrarı önler."""
+    result = await db.execute(
+        select(Signal).where(
+            Signal.symbol == symbol,
+            Signal.strategy == strategy,
+            Signal.status == SignalStatus.ACTIVE.value,
+        )
+    )
+    return result.scalars().first()
+
+
+async def get_signals_since(db: AsyncSession, since: datetime) -> List[Signal]:
+    """`since` tarihinden bu yana oluşturulmuş tüm sinyalleri döner (rapor için)."""
+    result = await db.execute(
+        select(Signal).where(Signal.created_at >= since).order_by(Signal.created_at.desc())
+    )
+    return result.scalars().all()
+
+
 async def save_backtest_result(db: AsyncSession, result_data: dict) -> BacktestResult:
     result = BacktestResult(**result_data)
     db.add(result)

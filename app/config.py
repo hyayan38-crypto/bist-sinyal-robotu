@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     take_profit_pct: float = 0.10
     max_open_signals: int = 5
 
+    # Fiyat önbelleği (SQLite) — paralel taramada yfinance yükünü azaltır
+    price_cache_enabled: bool = True
+
+    # Sinyal takibi
+    signal_expiry_days: int = 10       # bu süre sonunda açık sinyal EXPIRED olur
+    performance_window_days: int = 30  # isabet raporu pencere genişliği
+
     model_config = SettingsConfigDict(
         # Mutlak yol — uvicorn hangi dizinden çalıştırılırsa çalıştırılsın .env bulunur
         env_file=str(_ENV_FILE),

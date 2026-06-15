@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from functools import partial
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -30,6 +31,7 @@ from app.notifications.telegram import (
     format_bist100_early_signals,
     format_bist100_scan_report,
     format_bist100_full_report,
+    format_performance_summary,
     send_telegram_message,
 )
 from app.signals.scanner import scan_bist100
@@ -101,6 +103,50 @@ async def run_daily_scan() -> dict:
     return await run_bist100_scan(force_market_refresh=True)
 
 
+# ── Sinyal takibi entegrasyonu (DB) ──────────────────────────────────────────
+
+async def _track_signals(report: dict, send_summary: bool) -> None:
+    """
+    Tarama sonrası DB işlemleri — tamamen fail-open:
+      1. Açık sinyalleri güncel fiyatla değerlendir (TP/SL/süre)
+      2. Bu taramadaki yeni BUY/LATE sinyallerini kaydet
+      3. (gün sonu) isabet özetini Telegram'a gönder
+
+    Herhangi bir DB/ağ hatası taramayı veya bildirimi bozmaz.
+    """
+    try:
+        from app.database import AsyncSessionLocal
+        from app.signals.tracker import (
+            evaluate_open_signals,
+            persist_scan_signals,
+            build_performance_summary,
+        )
+
+        async with AsyncSessionLocal() as db:
+            await evaluate_open_signals(db)
+            await persist_scan_signals(db, report)
+
+            if send_summary:
+                summary = await build_performance_summary(db)
+                try:
+                    await send_telegram_message(format_performance_summary(summary))
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(f"Performans özeti gönderim hatası: {exc}")
+    except Exception as exc:  # noqa: BLE001 — takip katmanı taramayı asla bozmamalı
+        logger.error(f"Sinyal takibi atlandı (fail-open): {exc}")
+
+
+async def scheduled_scan_job(label: str = "manuel", send_summary: bool = False) -> dict:
+    """
+    Zamanlanmış iş sarmalayıcısı: tam taramayı çalıştırır, ardından sinyal
+    takibini (kayıt + değerlendirme + özet) tetikler. Cron işleri bunu çağırır;
+    run_bist100_scan / run_daily_scan çekirdeği değişmeden kalır.
+    """
+    report = await run_bist100_scan(force_market_refresh=True)
+    await _track_signals(report, send_summary=send_summary)
+    return report
+
+
 # ── Zamanlayıcı ───────────────────────────────────────────────────────────────
 
 class BISTScheduler:
@@ -115,8 +161,10 @@ class BISTScheduler:
         """Zamanlayıcıyı başlatır ve tüm günlük tarama işlerini ekler."""
         for hour, minute, label in _SCAN_TIMES:
             job_id = f"bist100_scan_{label}"
+            # İsabet özeti yalnızca gün sonu taramasında gönderilir
+            send_summary = label == "gun_sonu"
             self._scheduler.add_job(
-                run_bist100_scan,
+                partial(scheduled_scan_job, label, send_summary),
                 trigger=CronTrigger(
                     day_of_week="mon-fri",
                     hour=hour,

@@ -54,7 +54,7 @@ import time as _time
 import pandas as pd
 from loguru import logger
 
-from app.data.fetcher import fetch_symbol_data, FetchError
+from app.data.fetcher import fetch_symbol_data, fetch_symbol_data_cached, FetchError
 from app.indicators.technical import add_indicators
 from app.risk.market_filter import (
     is_market_favorable,
@@ -149,31 +149,37 @@ class ScanResult:
 
 
 # ── Strength Score (0-100) ────────────────────────────────────────────────────
+#
+# TEK KURAL: strength_score = round(strategy.strength × 100)
+# Stratejinin sürekli güç skoru (trend_breakout._signal_strength / pbs.strength)
+# tek sıralama kaynağıdır. Aşağıdaki fonksiyonlar yalnızca insan-okunur
+# GEREKÇE üretir — sayıyı belirlemezler. Böylece "iki ayrı puanlama" çakışması
+# ve sıralama tutarsızlığı ortadan kalkar.
 
-def _compute_strength_score(details: dict, df: pd.DataFrame) -> tuple[int, list[str]]:
-    score = 0
+def _score_from_strength(strength: float) -> int:
+    return max(0, min(100, int(round((strength or 0.0) * 100))))
+
+
+def _breakout_reasons(details: dict, df: pd.DataFrame) -> list[str]:
+    """trend_breakout BUY/LATE sinyali için açıklayıcı gerekçe etiketleri."""
     reasons: list[str] = []
 
     ema20 = details.get("ema_20", 0.0)
     ema50 = details.get("ema_50", 0.0)
     if ema50 > 0 and ema20 >= ema50 * (1 + _SCORE_EMA_GAP):
-        score += 20
         reasons.append("EMA trend güçlü")
 
     vol_ratio = details.get("volume_ratio", 0.0)
     if vol_ratio >= _SCORE_VOLUME_MULT:
-        score += 25
         reasons.append(f"Hacim patlaması (x{vol_ratio:.1f})")
 
     rsi = details.get("rsi_14", 0.0)
     if _SCORE_RSI_LOW <= rsi <= _SCORE_RSI_HIGH:
-        score += 15
         reasons.append(f"RSI ideal ({rsi:.1f})")
 
     close    = details.get("close", 0.0)
     prev_res = details.get("prev_resistance", 0.0)
     if prev_res > 0 and close >= prev_res * (1 + _SCORE_BREAKOUT_MARGIN):
-        score += 25
         reasons.append(f"Güçlü breakout (%{(close / prev_res - 1) * 100:.1f})")
 
     if not df.empty and "macd" in df.columns and "macd_signal" in df.columns:
@@ -181,22 +187,19 @@ def _compute_strength_score(details: dict, df: pd.DataFrame) -> tuple[int, list[
         macd     = last["macd"]
         macd_sig = last["macd_signal"]
         if pd.notna(macd) and pd.notna(macd_sig) and float(macd) > 0 and float(macd) > float(macd_sig):
-            score += 15
             reasons.append("MACD pozitif")
 
-    return min(score, 100), reasons
+    return reasons
 
 
-def _pbs_strength_score(pbs_details: dict) -> tuple[int, list[str]]:
-    """Pre-breakout sinyal gücü → 0-100 tamsayıya çevirir."""
-    setup_met = pbs_details.get("setup_conditions_met", 0)
-    early_met = pbs_details.get("early_conditions_met", 0)
+def _compute_strength_score(strength: float, details: dict, df: pd.DataFrame) -> tuple[int, list[str]]:
+    """Kanonik skor (strength×100) + trend_breakout gerekçeleri."""
+    return _score_from_strength(strength), _breakout_reasons(details, df)
+
+
+def _pbs_reasons(pbs_details: dict) -> list[str]:
+    """Pre-breakout EARLY_WATCH sinyali için açıklayıcı gerekçe etiketleri."""
     reasons: list[str] = []
-
-    score = int(round(
-        (setup_met / 6) * 50 + (early_met / 4) * 50
-    ))
-
     if pbs_details.get("volatility_squeeze"):
         reasons.append("Squeeze aktif")
     if pbs_details.get("bb_width_in_low"):
@@ -209,8 +212,12 @@ def _pbs_strength_score(pbs_details: dict) -> tuple[int, list[str]]:
     dist = pbs_details.get("distance_to_res_pct", 0.0)
     if dist and dist > 0:
         reasons.append(f"Direncin %{dist:.1f} altında")
+    return reasons
 
-    return min(score, 100), reasons
+
+def _pbs_strength_score(strength: float, pbs_details: dict) -> tuple[int, list[str]]:
+    """Kanonik skor (strength×100) + pre-breakout gerekçeleri."""
+    return _score_from_strength(strength), _pbs_reasons(pbs_details)
 
 
 # ── Likidite filtresi ─────────────────────────────────────────────────────────
@@ -249,7 +256,7 @@ def _process_df(
     price       = tb["price"]
     risk_level  = tb["risk_level"]
     strength    = tb["strength"]
-    score, reasons = _compute_strength_score(details, df)
+    score, reasons = _compute_strength_score(strength, details, df)
 
     # ── BUY ──────────────────────────────────────────────────────────────────
     if signal_type == "BUY":
@@ -292,7 +299,7 @@ def _process_df(
         pbs_details = pbs.get("details", {})
 
         if pbs_signal == "EARLY_WATCH":
-            pbs_score, pbs_reasons = _pbs_strength_score(pbs_details)
+            pbs_score, pbs_reasons = _pbs_strength_score(pbs["strength"], pbs_details)
             dist_pct = pbs_details.get("distance_to_res_pct", None)
             mf_note = ""
             if mf.status == STATUS_UNFAVORABLE:
@@ -369,7 +376,7 @@ def _scan_symbol_cached(
 
     try:
         _time.sleep(_PARALLEL_BATCH_DELAY)
-        fetch_result = fetch_symbol_data(symbol, period=period, interval="1d")
+        fetch_result = fetch_symbol_data_cached(symbol, period=period, interval="1d")
     except FetchError as exc:
         logger.warning(f"[SKIP] {symbol}: {exc}")
         _cache_set(symbol, None)
@@ -631,8 +638,9 @@ def scan_market(
             continue
         all_results.append(result)
 
+    # Sıralama _scan_parallel ile aynı kanonik anahtar: strength_score (0-100)
     all_results.sort(
-        key=lambda r: (_SIGNAL_ORDER.get(r.signal, 99), -r.strength)
+        key=lambda r: (_SIGNAL_ORDER.get(r.signal, 99), -r.strength_score)
     )
 
     elapsed = time.perf_counter() - t0
